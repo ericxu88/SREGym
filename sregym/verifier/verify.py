@@ -104,7 +104,9 @@ class Verifier:
 
     # ------------------------------------------------------------------ symptom checks
     def check_http(self, method: str, path: str, expect_status: list[int], body: Any = None,
-                   response_contains: str | None = None) -> tuple[bool, str]:
+                   response_contains: str | None = None, then_sql: dict[str, Any] | None = None) -> tuple[bool, str]:
+        """HTTP probe; optionally follow up with a SQL assertion that uses a key from the JSON response
+        (``then_sql = {db, sql, response_key, expect_min}``), e.g. "the payment for this order is in the ledger"."""
         status, text = 0, ""
         for attempt in range(3):
             status, text = util.http_request(method, self.base_url + path, body=body, timeout=5)
@@ -115,7 +117,47 @@ class Verifier:
             return False, f"{method} {path} -> {status if status else 'connection failed'} (expected {expect_status}): {text[:160]}"
         if response_contains and response_contains not in text:
             return False, f"{method} {path} -> {status} but response lacks {response_contains!r}"
+        if then_sql:
+            import json as _json
+
+            try:
+                value = _json.loads(text).get(then_sql["response_key"])
+            except (ValueError, AttributeError):
+                return False, f"{method} {path} -> {status} but response is not JSON with {then_sql['response_key']!r}"
+            db = self.world.root / then_sql["db"]
+            try:
+                conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+                try:
+                    n = conn.execute(then_sql["sql"], {then_sql["response_key"]: value}).fetchone()[0]
+                finally:
+                    conn.close()
+            except sqlite3.Error as e:
+                return False, f"{then_sql['db']}: {e}"
+            if n < int(then_sql.get("expect_min", 1)):
+                return False, f"{method} {path} -> {status} ({then_sql['response_key']}={value}) but {then_sql['db']} has {n} matching rows"
+            return True, f"{method} {path} -> {status}; {then_sql['db']} has {n} row(s) for {then_sql['response_key']}={value}"
         return True, f"{method} {path} -> {status}"
+
+    def check_ledger_complete(self, core: str, ledger: str, since: str) -> tuple[bool, str]:
+        """Every confirmed order created at/after ``since`` has a payment row in the ledger (data divergence repaired)."""
+        core_p, ledger_p = self.world.root / core, self.world.root / ledger
+        if not ledger_p.exists():
+            return False, f"{ledger} is missing"
+        try:
+            conn = sqlite3.connect(f"file:{ledger_p}?mode=ro", uri=True)
+            try:
+                conn.execute("ATTACH DATABASE ? AS core", (f"file:{core_p}?mode=ro",))
+                total = conn.execute("SELECT COUNT(*) FROM core.orders WHERE status = 'confirmed' AND created_at >= ?", (since,)).fetchone()[0]
+                missing = conn.execute(
+                    "SELECT COUNT(*) FROM core.orders o WHERE o.status = 'confirmed' AND o.created_at >= ? "
+                    "AND NOT EXISTS (SELECT 1 FROM main.payments p WHERE p.order_id = o.id)", (since,)).fetchone()[0]
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            return False, f"{ledger}: {e}"
+        if missing:
+            return False, f"{missing} of {total} confirmed orders since {since} have no ledger payment"
+        return True, f"all {total} confirmed orders since {since} have a ledger payment"
 
     # ------------------------------------------------------------------ root-cause checks
     def check_env_sqlite_path(self, file: str, key: str, expected_path: str) -> tuple[bool, str]:

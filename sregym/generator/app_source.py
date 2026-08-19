@@ -37,7 +37,7 @@ _APP_FILES = {
 }
 # files that only exist once a section exists
 _SECTION_FILES = {
-    "ledger": {"migrations/002_ledger.sql": "migrations/002_ledger.sql"},
+    "ledger": {"migrations/002_ledger.sql": "migrations/002_ledger.sql", "scripts/reconcile_ledger.py": "scripts/reconcile_ledger.py"},
     "cron": {"scripts/expire_carts.py": "scripts/expire_carts.py"},
 }
 

@@ -134,7 +134,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     print(f"fault:     {spec.fault}  {spec.notes}")
     if args.reveal:
         print(f"root cause: {spec.incident.root_cause_summary}")
-    print("\n" + build_task_prompt(world, spec.incident))
+    print("\n" + build_task_prompt(world, spec.incident, fault=spec.fault))
     if not args.serve:
         return 0
     live = LiveWorld(world, traffic_rps=args.traffic_rps, live_traffic=not args.no_traffic)

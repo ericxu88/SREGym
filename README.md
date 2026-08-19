@@ -161,7 +161,7 @@ verify, then call `resolve_incident`). Both prompts are stored in the trajectory
 | `query_metrics` | Per-minute time series from the metrics store: `http_requests_total{method,path,status}`, latency sum/count, `db_errors_total{db}`, `up`, derived `http_error_rate` and `..._avg`; `group_by`, `filters`, windows. |
 | `read_file` | Read text files with line numbers (config, source, nginx/systemd/cron files). |
 | `edit_file` | Exact-string replacement (or create); returns a unified diff. Log files are read-only. |
-| `run_shell` | Sandboxed shell: allow-listed read-mostly commands, `git` (log/show/diff/blame/checkout/revert/commit…, no reset/clean/push), `sqlite3` (forced read-only), `curl` to 127.0.0.1 only; simple pipes allowed, no redirection/`;`/`&&`/substitution; paths confined to the world root. |
+| `run_shell` | Sandboxed shell: allow-listed read-mostly commands, `git` (log/show/diff/blame/checkout/revert/commit…, no reset/clean/push), `sqlite3` (forced read-only), `curl` to 127.0.0.1 only, `python` only for unmodified repo ops scripts; pipes and `;`/`&&`/`||` sequences (each command validated), no redirection/substitution; paths confined to the host root. |
 | `restart_service` | `systemctl`-like control of `checkout-service` (restart/status/start/stop) — restart re-reads `.env`. |
 | `resolve_incident` | Terminal: agent submits a postmortem summary and ends the episode. |
 
@@ -230,6 +230,20 @@ which innocent change shares the same commit (payment timeout, cart TTL, sqlite 
 timeout, or a comment tidy-up), and the timeline (commit → deploy-bot → restart → first
 errors → page 5 min later → support note). Fix = restore the value in `.env` (or `git
 revert`/`checkout` it) **and** restart.
+
+**`ledger_divergence`** (rung 3, template #1): a config change pointed `LEDGER_DATABASE_URL` at the
+weekly audit snapshot (`data/ledger-snapshot-YYYYMMDD.db`). Nothing errors — `/checkout` keeps returning
+201 and payments silently land in the stale file; the finance-side ledger exporter
+(`ledger_last_payment_age_seconds`, `ledger_payments_total`, read from the canonical file) is what pages.
+Seeded: snapshot age (and whether an older one also exists), which commit made the change, and a
+**causal-depth** variant where the config shipped hours earlier with the restart *deferred* and an innocent
+release commit later restarted the service (so `git show HEAD` misleads). A complete fix = restore the URL,
+restart, **and** backfill the diverted payments with the repo's `scripts/reconcile_ledger.py --source … --apply`
+(config + restart alone scores 0.7: bleeding stopped, ledger still incomplete). New verifier check types:
+`http … then_sql` (the probe checkout's payment must appear in the real ledger) and `ledger_complete`
+(every confirmed order since the incident has a ledger payment). The shell can run **generation-time,
+hash-pinned repo scripts** (`python checkout-service/scripts/<name>.py …`, executed from the repo root);
+any other use of `python`, or a script the agent has modified, is refused.
 
 ### Verifier & reward
 
@@ -333,7 +347,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning)
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector)

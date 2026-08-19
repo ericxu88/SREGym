@@ -30,7 +30,10 @@ Key settings:
 
 - `DATABASE_URL` – sqlite URL of the core database (users, products, orders, carts)
 #[[ ledger
-- `LEDGER_DATABASE_URL` – sqlite URL of the payments ledger (separate file for audit isolation)
+- `LEDGER_DATABASE_URL` – sqlite URL of the payments ledger (separate file for audit isolation).
+  A weekly audit snapshot of the ledger is written to `data/ledger-snapshot-YYYYMMDD.db` by cron;
+  `scripts/reconcile_ledger.py` compares confirmed orders with ledger payments (and can copy
+  missing payments from another ledger-format file with `--source ... --apply`).
 #]] ledger
 - `LOG_PATH` / `LOG_LEVEL` – application log destination
 - `RATE_LIMIT_PER_MINUTE` – per-user checkout rate limit
@@ -58,6 +61,7 @@ Schema lives in `migrations/*.sql` and is applied by the provisioning playbook.
 
 - Health: `GET /health` reports per-database connectivity.
 - Logs: `logs/app.log` (access + application, UTC). Deploys: `logs/deploy.log`.
-- Metrics: `http_requests_total`, `db_errors_total`, `http_request_duration_ms_*`.
+- Metrics: `http_requests_total`, `db_errors_total`, `http_request_duration_ms_*`; the ledger exporter
+  publishes `ledger_payments_total` and `ledger_last_payment_age_seconds` (finance alerts on freshness).
 - Restart: `systemctl restart checkout-service` (or the service manager on the host).
 #]] runbook

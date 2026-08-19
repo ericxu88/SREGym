@@ -26,6 +26,7 @@ ALLOWED = {
     "which", "whoami", "hostname", "uptime", "uname", "jq", "tac", "rev", "nl", "column", "basename", "dirname",
     "realpath", "readlink", "shasum", "md5", "md5sum", "sha256sum", "true", "false", "test", "[", "strings", "comm",
     "paste", "expand", "fold", "od", "xxd", "hexdump", "seq", "tree", "less", "more", "id", "lsof", "netstat", "ss",
+    "python", "python3",  # only `python <repo>/scripts/<name>.py ...` for unmodified, generation-time scripts (see below)
 }
 GIT_ALLOWED = {
     "log", "show", "diff", "status", "blame", "grep", "ls-files", "rev-parse", "cat-file", "branch", "tag", "checkout",
@@ -40,7 +41,7 @@ CURL_DENIED = {"-O", "--remote-name", "-T", "--upload-file", "-K", "--config", "
 SEQUENCE_OPERATORS = {";", "&&", "||"}  # allowed between commands: each command is validated on its own
 CONTROL_OPERATORS = {"&", ">", ">>", "<", "<<", "<<<", ">|", "&>", "|&", "(", ")"}
 NULL_SINK = "/dev/null"
-TIMEOUT_S = 25
+TIMEOUT_S = 60
 
 
 def tokenize_command(command: str) -> list[tuple[str, list[str]]]:
@@ -172,7 +173,42 @@ def _validate_segment(argv: list[str], piped_in: bool, ctx: ToolContext) -> list
         raise ToolError("env may only be used without arguments")
     elif prog in ("less", "more"):
         argv = ["cat", *argv[1:]]
+    elif prog in ("python", "python3"):
+        argv = _validate_python(argv, ctx)
     return argv
+
+
+def _validate_python(argv: list[str], ctx: ToolContext) -> list[str]:
+    """`python scripts/<name>.py args...`: run an ops script that ships with the repo.
+
+    Only scripts whose content is byte-identical to the generation-time manifest are allowed (so a
+    script edited by the agent cannot be used to run arbitrary code), no interpreter options, and
+    the script runs from the repo root (where the app's .env lives) via a subshell. Path-like
+    arguments given relative to the host root are made absolute so they keep working."""
+    world = ctx.world
+    if len(argv) < 2 or argv[1].startswith("-"):
+        raise ToolError("python may only run an ops script shipped with the repo: python checkout-service/scripts/<name>.py [args]")
+    script = argv[1]
+    candidates = [world.root / script, world.repo / script]
+    full = next((c.resolve() for c in candidates if c.is_file()), None)
+    if full is None or not util.is_within(full, world.repo / "scripts"):
+        raise ToolError(f"{script!r} is not a runnable repo script (allowed: {', '.join(sorted(ctx.allowed_scripts)) or 'none'})")
+    rel = util.relpath(full, world.root)
+    expected = ctx.allowed_scripts.get(rel)
+    if expected is None:
+        raise ToolError(f"{rel} is not a runnable repo script (allowed: {', '.join(sorted(ctx.allowed_scripts)) or 'none'})")
+    if util.sha256_file(full) != expected:
+        raise ToolError(f"{rel} has been modified; only the shipped version of repo scripts may be executed")
+    args: list[str] = []
+    for a in argv[2:]:
+        for base in (world.root, world.repo):
+            cand = base / a
+            if not a.startswith("-") and cand.exists() and util.is_within(cand, world.root):
+                a = str(cand.resolve())
+                break
+        args.append(a)
+    # executed as: (cd <repo> && <python> scripts/<name>.py args)
+    return ["__SREGYM_REPO_SCRIPT__", world.python, str(full.relative_to(world.repo.resolve())), *args]
 
 
 class RunShellTool(Tool):
@@ -181,7 +217,8 @@ class RunShellTool(Tool):
     description = (
         "Run a read-mostly shell command in the host root (working directory). Allowed: common inspection commands "
         "(cat, grep, ls, find, head, tail, wc, diff, stat, ps, ...), git (log/show/diff/blame/checkout/revert/commit/... "
-        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only. Pipes and "
+        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only, and `python checkout-service/scripts/<name>.py ...` "
+        "for the ops scripts that ship with the repo. Pipes and "
 "joining commands with ';', '&&', '||' is fine; no redirection or command substitution (curl -o /dev/null is allowed). "
         "Use edit_file to change files and restart_service to restart."
     )
@@ -195,13 +232,17 @@ class RunShellTool(Tool):
         command = str(args.get("command", "")).strip()
         if not command:
             raise ToolError("command is required")
+        world = ctx.world
         items = tokenize_command(command)
         parts: list[str] = []
         for op, argv in items:
             argv = _validate_segment(argv, piped_in=(op == "|"), ctx=ctx)
-            parts.append((f" {op} " if op else "") + shlex.join(argv))
+            if argv and argv[0] == "__SREGYM_REPO_SCRIPT__":
+                segment = f"(cd {shlex.quote(str(world.repo))} && {shlex.join(argv[1:])})"
+            else:
+                segment = shlex.join(argv)
+            parts.append((f" {op} " if op else "") + segment)
         rebuilt = "".join(parts)
-        world = ctx.world
         home = world.root / "run" / ".home"
         home.mkdir(parents=True, exist_ok=True)
         env = {

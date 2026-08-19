@@ -85,6 +85,30 @@ class MetricsCollector(threading.Thread):
                     rows.append({"ts": ts, "m": name, "l": json.loads(labels_json), "v": round(delta, 3)})
             self._prev = cur
             self._prev_start = start
+        rows.extend(ledger_exporter_rows(self.world, ts))
         with open(self.world.metrics_file, "a") as f:
             for r in rows:
                 f.write(json.dumps(r) + "\n")
+
+
+def ledger_exporter_rows(world: World, ts: str) -> list[dict]:
+    """A finance-side "ledger exporter": reads the canonical ledger file directly (it is configured
+    independently of the app, which is exactly why it can notice the app writing elsewhere)."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    try:
+        conn = sqlite3.connect(f"file:{world.ledger_db}?mode=ro", uri=True)
+        try:
+            count, last = conn.execute("SELECT COUNT(*), MAX(created_at) FROM payments").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return [{"ts": ts, "m": "ledger_exporter_up", "l": {}, "v": 0}]
+    age = 0.0
+    if last:
+        age = max(0.0, (datetime.now(timezone.utc) - util.parse_iso(last)).total_seconds())
+    return [
+        {"ts": ts, "m": "ledger_payments_total", "l": {}, "v": int(count)},
+        {"ts": ts, "m": "ledger_last_payment_age_seconds", "l": {}, "v": round(age, 1)},
+    ]

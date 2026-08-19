@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sregym import util
-from sregym.generator.world import World
+from sregym.generator.world import SERVICE_NAME, World
 
 if TYPE_CHECKING:  # pragma: no cover
     from sregym.runtime.services import ServiceManager
@@ -31,6 +31,20 @@ class ToolContext:
     world: World
     services: "ServiceManager | None" = None
     max_output_chars: int = MAX_OUTPUT_CHARS
+    _allowed_scripts: dict[str, str] | None = field(default=None, repr=False)
+
+    @property
+    def allowed_scripts(self) -> dict[str, str]:
+        """Repo scripts the shell may execute: root-relative path -> generation-time sha256 (from the manifest).
+        Only unmodified, generation-time scripts run, so the agent cannot smuggle arbitrary code through them."""
+        if self._allowed_scripts is None:
+            try:
+                files = self.world.load_manifest().get("files", {})
+            except (OSError, ValueError):
+                files = {}
+            self._allowed_scripts = {rel: sha for rel, sha in files.items()
+                                     if rel.startswith(f"{SERVICE_NAME}/scripts/") and rel.endswith(".py")}
+        return self._allowed_scripts
 
 
 class ToolError(Exception):

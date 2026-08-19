@@ -48,7 +48,11 @@ class _Sim:
     nginx_error: list[tuple[datetime, str]] = field(default_factory=list)
     new_orders: list[tuple] = field(default_factory=list)
     new_items: list[tuple] = field(default_factory=list)
-    new_payments: list[tuple] = field(default_factory=list)
+    new_payments: list[tuple] = field(default_factory=list)  # -> the real ledger
+    diverted_payments: list[tuple] = field(default_factory=list)  # -> incident.extra["payments_db"] (e.g. a stale snapshot)
+    ledger_payment_times: list[datetime] = field(default_factory=list)  # payments that reached the real ledger
+    ledger_base_count: int = 0
+    ledger_base_last: datetime | None = None
     metrics: dict[str, dict] = field(default_factory=dict)  # minute-iso -> aggregates
     seq: int = 0
     stats: dict[str, Any] = field(default_factory=lambda: {"requests": 0, "errors": 0, "incident_requests": 0, "incident_errors": 0})
@@ -108,7 +112,7 @@ def _traceback_templates(repo: Path) -> dict[str, list[str]]:
     return out
 
 
-def _load_refs(world: World) -> tuple[list[int], list[dict], int]:
+def _load_refs(world: World) -> tuple[list[int], list[dict], int, int, datetime | None]:
     conn = sqlite3.connect(f"file:{world.core_db}?mode=ro", uri=True)
     try:
         user_ids = [r[0] for r in conn.execute("SELECT id FROM users ORDER BY id")]
@@ -116,7 +120,12 @@ def _load_refs(world: World) -> tuple[list[int], list[dict], int]:
         max_order = conn.execute("SELECT COALESCE(MAX(id), 0) FROM orders").fetchone()[0]
     finally:
         conn.close()
-    return user_ids, products, max_order
+    ledger = sqlite3.connect(f"file:{world.ledger_db}?mode=ro", uri=True)
+    try:
+        count, last = ledger.execute("SELECT COUNT(*), MAX(created_at) FROM payments").fetchone()
+    finally:
+        ledger.close()
+    return user_ids, products, max_order, int(count), (util.parse_iso(last) if last else None)
 
 
 def _bump_metric(sim: _Sim, ts: datetime, name: str, labels: dict[str, str], value: float) -> None:
@@ -210,8 +219,14 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
                 total += p["price_cents"] * qty
                 sim.new_items.append((order_id, p["id"], qty, p["price_cents"]))
             sim.new_orders.append((order_id, user_id, "confirmed", total, "USD", created, created))
-            sim.new_payments.append((order_id, user_id, total, "USD", rng.choice(["card"] * 7 + ["paypal"] * 2 + ["apple_pay"]),
-                                     "captured", "ch_%016x" % rng.getrandbits(64), created))
+            payment = (order_id, user_id, total, "USD", rng.choice(["card"] * 7 + ["paypal"] * 2 + ["apple_pay"]),
+                       "captured", "ch_%016x" % rng.getrandbits(64), created)
+            diverted = bool(inc) and ts >= inc.incident_at and bool(inc.extra.get("payments_db"))
+            if diverted:
+                sim.diverted_payments.append(payment)
+            else:
+                sim.new_payments.append(payment)
+                sim.ledger_payment_times.append(ts)
     elif template == "/orders/{order_id}":
         if rng.random() < 0.05:
             order_id = rng.randint(sim.max_order_id + 1, sim.max_order_id + 20000)
@@ -287,9 +302,10 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     """Write all historical artifacts for the world; returns summary stats (also stored in world.extra)."""
     seed = world.seed if seed is None else seed
     rng = random.Random((seed * 7919) ^ 0x106)
-    user_ids, products, max_order = _load_refs(world)
+    user_ids, products, max_order, ledger_count, ledger_last = _load_refs(world)
     sim = _Sim(rng=rng, world=world, incident=incident, user_ids=user_ids, products=products,
-               max_order_id=max_order, tb=_traceback_templates(world.repo))
+               max_order_id=max_order, tb=_traceback_templates(world.repo),
+               ledger_base_count=ledger_count, ledger_base_last=ledger_last)
     start, end = world.history_start, world.now
     version = re.search(r'__version__ = "([^"]+)"', (world.repo / "checkout" / "__init__.py").read_text()).group(1)
     n_keys = len(util.parse_env_file(world.env_file.read_text()))
@@ -349,13 +365,21 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
             _record_request(sim, t, "GET", "/metrics", "/metrics", 200, tp.latency_ms(rng, "/metrics"), {}, None, None,
                             ua="Prometheus/2.51.0")
         t += timedelta(seconds=tp.METRICS_INTERVAL_S)
-    # 'up' gauge per minute
+    # 'up' gauge + ledger exporter gauges per minute (exporter reads the canonical ledger file)
+    import bisect
+
+    ledger_times = sorted(sim.ledger_payment_times)
     minute = start.replace(second=0, microsecond=0)
     while minute < end:
         up = 1.0
         if gap and minute <= gap[0] < minute + timedelta(minutes=1):
             up = 0.75
         _bump_metric(sim, minute, "up", {}, up)
+        minute_end = minute + timedelta(minutes=1)
+        n = bisect.bisect_left(ledger_times, minute_end)
+        last = ledger_times[n - 1] if n else sim.ledger_base_last
+        _bump_metric(sim, minute, "ledger_payments_total", {}, sim.ledger_base_count + n)
+        _bump_metric(sim, minute, "ledger_last_payment_age_seconds", {}, round((minute_end - last).total_seconds(), 1) if last else 0.0)
         minute += timedelta(minutes=1)
 
     # ------------------------------------------------------------------ write artifacts
@@ -377,6 +401,7 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
 
     world.max_order_id = sim.max_order_id
     stats = dict(sim.stats)
+    stats["diverted_payments"] = len(sim.diverted_payments)
     stats["incident_error_rate"] = (stats["incident_errors"] / stats["incident_requests"]) if stats["incident_requests"] else 0.0
     stats["app_log_lines"] = util.count_lines(world.app_log)
     world.extra["history"] = stats
@@ -386,19 +411,28 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
 
 def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: random.Random) -> None:
     lines: list[str] = []
-    commits = world.commits if incident is None else world.commits[:-1]
-    for c in commits:
+    custom = incident.extra.get("deploys") if incident else None
+    if custom:
+        base_commits = world.commits[: int(incident.extra.get("n_base_commits", len(world.commits) - len(custom)))]
+    else:
+        base_commits = world.commits if incident is None else world.commits[:-1]
+    for c in base_commits:
         when = util.parse_iso(c["when"]) + timedelta(minutes=rng.uniform(2, 7))
         sha = c["sha"][:7]
         lines += _deploy_lines(when, sha, c["author"], c["message"], config_only=c["message"].startswith(("ops:", "chore: rotate")), rng=rng)
-    if incident:
+    if custom:
+        for d in custom:
+            restart_at = incident.restart_at if d.get("restart") == "restart" else None
+            lines += _deploy_lines(util.parse_iso(d["when"]), d["sha"], d["author"], d["message"], config_only=bool(d.get("config_only")),
+                                   rng=rng, restart_at=restart_at, restart=d.get("restart", "restart"))
+    elif incident:
         lines += _deploy_lines(incident.deploy_at, incident.deploy_commit[:7], incident.deploy_author, incident.deploy_message,
                                config_only=True, rng=rng, restart_at=incident.restart_at)
     (world.log_dir / "deploy.log").write_text("".join(l + "\n" for l in lines))
 
 
 def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_only: bool, rng: random.Random,
-                  restart_at: datetime | None = None) -> list[str]:
+                  restart_at: datetime | None = None, restart: str = "restart") -> list[str]:
     tag = f"[{SERVICE_NAME}]"
     t = when
     out = [f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy {sha} requested by {author} ({message})"]
@@ -410,6 +444,11 @@ def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_on
     else:
         t += timedelta(seconds=rng.uniform(4, 12))
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} pip install -r requirements.txt ... up to date")
+    if restart == "deferred":
+        t += timedelta(seconds=rng.uniform(1, 2))
+        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} config-only change: service restart deferred (takes effect on next restart)")
+        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy complete in {int((t - when).total_seconds())}s")
+        return out
     t = restart_at - timedelta(seconds=2.7) if restart_at else t + timedelta(seconds=rng.uniform(1, 2))
     out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} restarting service (systemctl restart {SERVICE_NAME})")
     t = restart_at + timedelta(seconds=rng.uniform(1.5, 3)) if restart_at else t + timedelta(seconds=rng.uniform(2, 4))
@@ -455,3 +494,8 @@ def _insert_orders(world: World, sim: _Sim) -> None:
     ledger.executemany("INSERT INTO payments (order_id, user_id, amount_cents, currency, method, status, gateway_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", sim.new_payments)
     ledger.commit()
     ledger.close()
+    if sim.diverted_payments and sim.incident and sim.incident.extra.get("payments_db"):
+        other = sqlite3.connect(world.repo / sim.incident.extra["payments_db"])
+        other.executemany("INSERT INTO payments (order_id, user_id, amount_cents, currency, method, status, gateway_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", sim.diverted_payments)
+        other.commit()
+        other.close()

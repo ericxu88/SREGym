@@ -47,8 +47,22 @@ _DETAILS = [
 ]
 
 
-def build_task_prompt(world: World, incident: IncidentProfile, seed: int | None = None) -> str:
+def build_task_prompt(world: World, incident: IncidentProfile, seed: int | None = None, fault: str | None = None) -> str:
+    """Render the page for the world's fault (each template owns its symptom description)."""
+    from sregym.faults.base import get_fault
+
     rng = random.Random((seed if seed is not None else world.seed) ^ 0x9A6E)
+    template = get_fault(fault or world.fault or "env_var_typo")
+    return template.render_page(world, incident, rng)
+
+
+def page_footer(world: World) -> str:
+    return (f"Current time is {util.fmt_iso(world.now)} (all timestamps UTC). Investigate, mitigate, and fix the root cause. "
+            "Call resolve_incident when done.")
+
+
+def render_error_rate_page(world: World, incident: IncidentProfile, rng: random.Random) -> str:
+    """Generic 5xx error-rate page (used by env_var_typo)."""
     stats = world.extra.get("history", {})
     rate = 100.0 * float(stats.get("incident_error_rate", 0.5))
     rate = max(10.5, min(100.0, rate))
@@ -72,8 +86,7 @@ def build_task_prompt(world: World, incident: IncidentProfile, seed: int | None 
         "Runbook:      (none linked)",
         f"Acknowledged: you, {ack:%H:%M} UTC",
         "",
-        f"Current time is {util.fmt_iso(world.now)} (all timestamps UTC). Investigate, mitigate, and fix the root cause. "
-        "Call resolve_incident when done.",
+        page_footer(world),
     ]
     return "\n".join(lines)
 

@@ -354,6 +354,9 @@ def build_report(sweep_dir: Path) -> tuple[dict[str, Any], str]:
     by_target_kind = breakdown(lambda r: f"{fp(r).get('target', '?')}/{fp(r).get('kind', '?')}")
     by_innocent = breakdown(lambda r: str(fp(r).get("innocent_change", "?")))
     by_stop = breakdown(lambda r: str(r.get("stop_reason", "?")))
+    # every other fault parameter (e.g. lagged, snapshot, commit_variant) -> its own breakdown
+    param_keys = sorted({k for r in model_results for k in fp(r) if k not in ("target", "kind", "innocent_change")})
+    by_param = {k: breakdown(lambda r, k=k: str(fp(r).get(k, "?"))[:40]) for k in param_keys}
 
     def stat(xs: list[float]) -> dict[str, float]:
         if not xs:
@@ -369,7 +372,7 @@ def build_report(sweep_dir: Path) -> tuple[dict[str, Any], str]:
         "success_ci95": [round(lo, 4), round(hi, 4)], "mean_reward": round(statistics.mean(rewards), 4) if rewards else None,
         "reward_histogram": hist, "outcomes": outcomes,
         "by_target": by_target, "by_kind": by_kind, "by_target_kind": by_target_kind, "by_innocent_change": by_innocent,
-        "by_stop_reason": by_stop, "steps": stat(steps), "input_tokens": stat(in_toks), "output_tokens": stat(out_toks),
+        "by_stop_reason": by_stop, "by_param": by_param, "steps": stat(steps), "input_tokens": stat(in_toks), "output_tokens": stat(out_toks),
         "duration_s": stat(durs), "cost_usd_total": round(sum(costs), 2) if costs else None,
         "cost_usd_per_episode": round(statistics.mean(costs), 3) if costs else None,
         "failed_seeds": [{"seed": r["seed"], "outcome": r.get("outcome"), "reward": r.get("reward"), "steps": r.get("steps"),
@@ -428,6 +431,9 @@ def _render_markdown(s: dict[str, Any]) -> str:
 
         table("By env var × typo kind", s["by_target_kind"])
         table("By innocent change sharing the deploy commit", s["by_innocent_change"])
+        for k, d in s.get("by_param", {}).items():
+            if len(d) > 1:
+                table(f"By {k}", d)
         table("By stop reason", s["by_stop_reason"])
         if s["failed_seeds"]:
             lines += ["## Failed seeds (triage)", "", "| seed | outcome | reward | steps | stop | hidden root cause |", "|---|---|---|---|---|---|"]

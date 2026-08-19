@@ -105,7 +105,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     out_dir.mkdir(parents=True, exist_ok=True)
     traj_path = out_dir / "trajectory.jsonl"
     system_prompt = build_system_prompt(world, config.max_steps, style=config.prompt_style)
-    task_prompt = build_task_prompt(world, spec.incident)
+    task_prompt = build_task_prompt(world, spec.incident, fault=spec.fault)
     (out_dir / "prompt.txt").write_text(system_prompt + "\n\n---\n\n" + task_prompt + "\n")
 
     writer = TrajectoryWriter(traj_path)

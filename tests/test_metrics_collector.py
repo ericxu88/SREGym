@@ -19,6 +19,7 @@ def test_deltas_continue_across_failed_scrape_and_reset_on_restart(tmp_path, mon
     class W:  # minimal stand-in for World
         base_url = "http://127.0.0.1:1"
         metrics_file = tmp_path / "series.jsonl"
+        ledger_db = tmp_path / "no-ledger.db"  # exporter reports ledger_exporter_up=0 for a missing file
 
     responses = iter([_prom(100, 10), _prom(100, 25), _prom(100, 0, up=False), _prom(100, 40), _prom(200, 3)])
     monkeypatch.setattr(m.util, "http_request", lambda *a, **k: next(responses))

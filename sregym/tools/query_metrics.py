@@ -13,7 +13,7 @@ DERIVED = {
     "http_error_rate": "5xx responses / all responses per bucket (from http_requests_total)",
     "http_request_duration_ms_avg": "average latency per bucket (duration_ms_sum / duration_ms_count)",
 }
-GAUGES = {"up"}
+GAUGES = {"up", "ledger_payments_total", "ledger_last_payment_age_seconds", "ledger_exporter_up"}
 MAX_ROWS = 60
 MAX_COLS = 8
 
@@ -44,7 +44,8 @@ class QueryMetricsTool(Tool):
     description = (
         "Query service metrics as a time series table (per-minute buckets by default). Call without a metric to list "
         "available metrics and labels. Metrics: http_requests_total{method,path,status}, http_request_duration_ms_sum/_count{path}, "
-        "db_errors_total{db}, up, plus derived http_error_rate and http_request_duration_ms_avg. "
+        "db_errors_total{db}, up, ledger_payments_total, ledger_last_payment_age_seconds (finance ledger exporter), "
+        "plus derived http_error_rate and http_request_duration_ms_avg. "
         "Use group_by to split by a label (e.g. status, path) and filters to restrict (e.g. {\"path\": \"/checkout\"})."
     )
     input_schema = {

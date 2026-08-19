@@ -41,7 +41,7 @@ class ScriptedAgent(AgentAdapter):
     def start(self, system_prompt: str, task_prompt: str, tool_specs: list[dict[str, Any]]) -> None:
         m = re.search(r"http://127\.0\.0\.1:(\d+)", system_prompt)
         self.port = int(m.group(1)) if m else None
-        self._gen = self._script()
+        self._gen = self._script_ledger() if "ledger" in task_prompt.lower() else self._script()
         self._pending = None
 
     def next_turn(self) -> AgentTurn:
@@ -78,6 +78,54 @@ class ScriptedAgent(AgentAdapter):
             bad = max(candidates, key=lambda a: difflib.SequenceMatcher(None, a, good).ratio())
             return bad, good
         return None
+
+    # ------------------------------------------------------------------ ledger divergence script
+    def _script_ledger(self) -> Generator[ToolCall, ToolResult | None, None]:
+        base = f"http://127.0.0.1:{self.port}"
+        if self.mode == "noop":
+            yield self._call("resolve_incident", summary="Looks fine.", root_cause="unknown")
+            return
+        if self.mode == "mask":
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Restarted the service.", root_cause="transient")
+            return
+        self.notes.append("Ledger freshness page while checkouts succeed: payments must be going somewhere else. Checking metrics and deploys.")
+        yield self._call("query_metrics", metric="ledger_last_payment_age_seconds", window_minutes=60, step_minutes=5)
+        yield self._call("query_metrics", metric="http_requests_total", window_minutes=30, group_by="status", step_minutes=5)
+        yield self._call("read_logs", path=f"{REPO}/logs/deploy.log", tail=True, limit=14)
+        yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.serve|checkout\.config", tail=True, limit=10)
+        diff = yield self._call("run_shell", command=f"git -C {REPO} log -p -1 -- .env")
+        yield self._call("read_file", path=f"{REPO}/.env")
+        yield self._call("run_shell", command=f"ls -la {REPO}/data")
+        fix = self._plan_fix(diff.content if diff else "")
+        if fix is None:
+            yield self._call("resolve_incident", summary="Could not determine the fix.", root_cause="unknown")
+            return
+        bad, good = fix
+        bad_path = util.parse_sqlite_url(bad.partition("=")[2])
+        yield self._call("run_shell", command=f"python {REPO}/scripts/reconcile_ledger.py --since 03:00 | head -5")
+        if self.mode == "workaround":
+            self.notes.append("Pointing the db layer at the real ledger file in code.")
+            good_path = util.parse_sqlite_url(good.partition("=")[2])
+            yield self._call("edit_file", path=f"{REPO}/checkout/db.py",
+                             old_string="    path = sqlite_path(url)\n",
+                             new_string=f"    path = sqlite_path(url)\n    if path.endswith('.db') and 'snapshot' in path:\n        path = {good_path!r}\n")
+        else:
+            self.notes.append(f"The ledger URL was changed to {bad_path!r}; restoring the real ledger path.")
+            yield self._call("edit_file", path=f"{REPO}/.env", old_string=bad, new_string=good)
+        if self.mode == "sloppy":
+            yield self._call("edit_file", path=f"{REPO}/README.md", old_string="# checkout-service", new_string="# checkout-service (fixed)")
+        yield self._call("restart_service")
+        if self.mode in ("solve", "sloppy"):
+            self.notes.append("Backfilling the payments that were written to the stale copy.")
+            yield self._call("run_shell", command=f"python {REPO}/scripts/reconcile_ledger.py --source {REPO}/{bad_path} --apply")
+            yield self._call("run_shell", command=f"python {REPO}/scripts/reconcile_ledger.py")
+        yield self._call("run_shell", command=f"curl -s {base}/health")
+        yield self._call("resolve_incident",
+                         summary=(f"LEDGER_DATABASE_URL had been changed to {bad_path}; the service restarted with it and wrote payments "
+                                  "into the stale snapshot while checkouts kept succeeding. Restored the real ledger path, restarted, and "
+                                  "copied the diverted payments back into data/ledger.db with scripts/reconcile_ledger.py."),
+                         root_cause="ledger URL pointed at a stale snapshot after a config change")
 
     # ------------------------------------------------------------------ the script
     def _script(self) -> Generator[ToolCall, ToolResult | None, None]:

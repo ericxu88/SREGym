@@ -122,7 +122,10 @@ class World:
         return self.repo / "run" / f"{SERVICE_NAME}.pid"
 
     def db_paths(self) -> dict[str, Path]:
-        return {"core": self.core_db, "ledger": self.ledger_db}
+        paths = {"core": self.core_db, "ledger": self.ledger_db}
+        for rel in self.extra.get("extra_dbs", []):  # e.g. audit snapshots created by a fault template
+            paths[rel] = self.repo / rel
+        return paths
 
     # ------------------------------------------------------------------ build
     @classmethod
