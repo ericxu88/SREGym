@@ -41,6 +41,12 @@ def test_outcome_taxonomy():
     assert classify_outcome(_res(True, True, True, infra="service did not start")) == "infra_error"
     revert = [{"tool_call": "run_shell", "tool_args": {"command": "git -C checkout-service revert HEAD"}, "tool_error": False}]
     assert classify_outcome(_res(False, False, True, stop="max_steps"), revert) == "wrong_fix"
+    # regression: 'checkout' inside the repo path is not a git checkout
+    browsing = [{"tool_call": "run_shell", "tool_args": {"command": "git -C checkout-service log -p -- .env | head -40"}, "tool_error": False},
+                {"tool_call": "run_shell", "tool_args": {"command": "git -C checkout-service show HEAD"}, "tool_error": False}]
+    assert classify_outcome(_res(False, False, True, stop="max_steps"), browsing) == "never_found"
+    assert classify_outcome(_res(False, False, True, stop="max_steps"),
+                            [{"tool_call": "run_shell", "tool_args": {"command": "git -C checkout-service checkout HEAD~1 -- .env"}, "tool_error": False}]) == "wrong_fix"
 
 
 def test_cost_and_ci():

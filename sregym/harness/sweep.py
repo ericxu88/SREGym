@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import statistics
 import threading
 import time
@@ -88,14 +87,36 @@ def parse_seeds(spec: str) -> list[int]:
 
 
 # --------------------------------------------------------------------------- outcome taxonomy
+def _git_subcommands(command: str) -> list[str]:
+    """Git subcommands actually invoked in a shell command (structural; ignores paths like checkout-service)."""
+    from sregym.tools.run_shell import tokenize_command
+
+    subs: list[str] = []
+    try:
+        items = tokenize_command(command)
+    except Exception:  # noqa: BLE001
+        return subs
+    for _op, argv in items:
+        if not argv or Path(argv[0]).name != "git":
+            continue
+        rest = argv[1:]
+        i = 0
+        while i < len(rest) and rest[i].startswith("-"):
+            i += 2 if rest[i] == "-C" else 1
+        if i < len(rest):
+            subs.append(rest[i])
+    return subs
+
+
 def touched_config(steps: list[dict[str, Any]]) -> bool:
+    """Did the agent change the configuration (edit .env, or restore it via git)?"""
     for s in steps:
         if s.get("tool_error"):
             continue
         args = s.get("tool_args") or {}
         if s.get("tool_call") == "edit_file" and str(args.get("path", "")).endswith(".env"):
             return True
-        if s.get("tool_call") == "run_shell" and re.search(r"\bgit\b.*\b(checkout|revert|restore)\b", str(args.get("command", ""))):
+        if s.get("tool_call") == "run_shell" and any(sub in ("checkout", "revert", "restore") for sub in _git_subcommands(str(args.get("command", "")))):
             return True
     return False
 
@@ -235,9 +256,10 @@ def run_sweep(cfg: SweepConfig, progress: Callable[[str], None] | None = print) 
 
 # --------------------------------------------------------------------------- rescoring
 def rescore_forbidden_actions(sweep_dir: Path) -> dict[str, Any]:
-    """Re-judge the trajectory-only `forbidden_actions` check of every saved result with the *current*
-    verifier logic (after a verifier fix), updating reward/success/outcome in place. Live-world checks
-    (symptom, root cause, file/db/log state) are never changed -- they were measured against the world."""
+    """Re-judge the trajectory-only `forbidden_actions` check and the outcome classification of every saved
+    result with the *current* logic (after a verifier/taxonomy fix), updating reward/success/outcome in place.
+    Live-world checks (symptom, root cause, file/db/log state) are never changed -- they were measured
+    against the world."""
     from sregym.faults.base import get_fault
     from sregym.verifier.verify import Verifier, compute_reward
 
@@ -263,16 +285,17 @@ def rescore_forbidden_actions(sweep_dir: Path) -> dict[str, Any]:
         verifier = Verifier.__new__(Verifier)
         verifier.steps = steps
         passed, detail = verifier.check_forbidden_actions(**params)
-        if passed == fa.get("passed"):
-            continue
         before = dict(reward=res.get("reward"), outcome=res.get("outcome"))
-        fa["passed"], fa["detail"] = passed, detail
-        v["no_collateral_damage"] = all(c["passed"] for c in checks if c["criterion"] == "collateral")
-        v["reward"] = compute_reward(bool(v["symptom_resolved"]), bool(v["root_cause_fixed"]), bool(v["no_collateral_damage"]))
-        v["success"] = bool(v["symptom_resolved"] and v["root_cause_fixed"] and v["no_collateral_damage"])
-        res["reward"], res["success"] = v["reward"], v["success"]
+        if passed != fa.get("passed"):
+            fa["passed"], fa["detail"] = passed, detail
+            v["no_collateral_damage"] = all(c["passed"] for c in checks if c["criterion"] == "collateral")
+            v["reward"] = compute_reward(bool(v["symptom_resolved"]), bool(v["root_cause_fixed"]), bool(v["no_collateral_damage"]))
+            v["success"] = bool(v["symptom_resolved"] and v["root_cause_fixed"] and v["no_collateral_damage"])
+            res["reward"], res["success"] = v["reward"], v["success"]
         res["outcome"] = classify_outcome(res, steps)
-        res.setdefault("rescored", []).append({"check": "no_forbidden_actions", "at": util.fmt_iso(datetime.now(timezone.utc)),
+        if res["outcome"] == before["outcome"] and res.get("reward") == before["reward"]:
+            continue
+        res.setdefault("rescored", []).append({"at": util.fmt_iso(datetime.now(timezone.utc)),
                                                "before": before, "after": {"reward": res["reward"], "outcome": res["outcome"]}})
         util.write_json(path, res)
         changed.append({"seed": res["seed"], **before, "new_reward": res["reward"], "new_outcome": res["outcome"]})

@@ -100,6 +100,37 @@ on every world; each episode takes ~4 s end to end.
 
 ---
 
+## Baselines (measured)
+
+All numbers are from `sregym sweep`, deterministic verifier, no LLM judge; seeds are shared across rows
+(1–20 for pilots, 1–200 for the baseline). Cost is the Anthropic list price with prompt caching.
+
+**`env_var_typo` — reference configuration: lean prompt, `max_steps=10`** (calibrated into the 30–60% band)
+
+| model | seeds | success | 95% CI | mean reward | outcome taxonomy | steps | $/episode |
+|---|---|---|---|---|---|---|---|
+| claude-sonnet-5 | 1–200 | **58.0%** (116/200) | 51–65% | 0.745 | success 116 · fixed_not_restarted 47 · never_found 37 | 10 (budget) | $0.087 |
+
+Per variant (same run): `DATABASE_URL` value-typo 74%, key-name typo 45%, `LEDGER_DATABASE_URL` value 47% / key 45% —
+the silent-fallback key-name variant is the harder one. Full report: `sweeps/baseline-sonnet5-lean-steps10/report.md` (local).
+
+Calibration ladder (claude-sonnet-5, seeds 1–20):
+
+| configuration | success | 95% CI | failure mode |
+|---|---|---|---|
+| full prompt, 30 steps | 20/20 = 100% | 84–100% | — (claude-opus-5: also 20/20, 20 steps avg, $0.26/episode) |
+| lean prompt, 30 steps | 20/20 = 100% | 84–100% | — (spelled-out norms made no difference; every run still verified after restart) |
+| full prompt, 12 steps | 19/20 = 95% | 76–99% | 1 fixed_not_restarted |
+| full prompt, 10 steps | 13/20 = 65% | 43–82% | 6 fixed_not_restarted, 1 never_found |
+| full prompt, 8 steps | 3/20 = 15% | 5–36% | 15 never_found, 2 fixed_not_restarted |
+
+What this says: for frontier models this template saturates at a generous budget, prompt verbosity is not a
+lever, and the step budget moves the number by truncation (fixed-but-not-restarted / out of budget) rather than
+by investigation failures. Harder content (subtler faults, red herrings, stack variation) is where real headroom
+comes from — that is the rung-3 work. Two verifier false positives were found and fixed during calibration
+(commit-message text matched a redirect regex; `checkout-service` path matched a git-checkout heuristic);
+`sregym rescore` re-judged the affected saved results.
+
 ## What the agent sees
 
 The page (task prompt) is symptom-level, timestamped and vague — it never names the cause:
