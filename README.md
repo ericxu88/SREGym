@@ -1,10 +1,301 @@
 # SREGym
 
-A procedurally-generated incident-response RL environment for LLM agents.
+**A procedurally-generated incident-response RL environment for LLM agents.**
 
-Every episode generates a small but complete production stack, injects a known fault
-from a template library, gives the agent on-call tools, and deterministically verifies
-whether the agent fixed the true root cause.
+Every episode generates a small but complete production stack on local disk (FastAPI
+service + SQLite databases + git repo with a plausible history + nginx/systemd/cron
+config + hours of realistic logs and metrics), injects a *known* fault from a template
+library, pages the agent like a real on-call engineer would be paged, gives it on-call
+tools, and then **deterministically verifies** — no LLM judge — whether the agent fixed
+the true root cause without doing collateral damage.
 
-Work in progress. Build order: world generator + app -> fault injection + task prompt ->
-tools -> verifier -> agent harness -> CLI.
+```
+$ sregym run --seed 42 --agent anthropic --model claude-opus-5
+```
+
+The MVP ships one fault template (`env_var_typo`: a config deploy typo'd a database
+env var), one model adapter (Anthropic Messages API, tool use) plus a deterministic
+reference solver, a paginated investigation toolset, a 3-part verifier, JSONL
+trajectories, and a CLI to run / verify / replay episodes.
+
+---
+
+## Quick start
+
+Requirements: Python ≥ 3.10, `git`, `sqlite3` (both usually preinstalled). No Docker.
+
+```bash
+uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e ".[dev]"
+source .venv/bin/activate
+
+# offline demo: deterministic reference solver, no API key needed (~4 s)
+sregym run --seed 42 --agent scripted
+
+# a real model (uses ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile)
+sregym run --seed 42 --agent anthropic --model claude-opus-5 --max-steps 30
+
+# replay any trajectory offline
+sregym replay runs/<timestamp>-seed42-anthropic/trajectory.jsonl
+
+# generate a world and keep it running for manual poking (Ctrl-C to stop)
+sregym generate --seed 7 --serve --reveal
+
+pytest -q       # 65 tests, ~1.5 min (each test builds a real world and runs the real service)
+```
+
+### Demo run (scripted reference solver, seed 42)
+
+```
+$ sregym run --seed 42 --agent scripted
+[sregym] world at /tmp/sregym-42-vb6dyrff (port 53264); fault=env_var_typo seed=42
+[sregym] hidden root cause: Deploy b25be1a (ops: bump payment gateway timeout to 2500ms (PAY-231)) changed
+         checkout-service/.env: key DATABASE_URL was mistyped as DATABSAE_URL. Fix: restore DATABASE_URL=... and restart.
+[agent] Paged for 5xx on checkout-service. Starting with the log inventory and error rate by path.
+[step 1] read_logs() -> 'Available log files (path, lines, size, time span):\ncheckout-service/logs/app.log   33654 lines ...'
+[step 2] query_metrics(metric='http_error_rate', window_minutes=60, group_by='path', step_minutes=5) -> 'metric=http_error_rate ...'
+[step 3] read_logs(path='checkout-service/logs/app.log', grep='checkout\\.access.* 5\\d\\d ', tail=True, limit=15) -> '... 1688 matching lines ...'
+[agent] 500s carry 'unable to open database file'. Checking for restarts/config warnings around the onset.
+[step 4] read_logs(path='checkout-service/logs/app.log', grep='checkout\\.serve|checkout\\.config|Shutting down', tail=True) -> ...
+[step 5] read_logs(path='checkout-service/logs/deploy.log', tail=True, limit=8) -> '... deploy b25be1a requested by David Guzman ...'
+[step 6] run_shell(command='curl -s http://127.0.0.1:53264/health') -> '{"status":"degraded",...,"checks":{"core_db":"error: unable to open database file","ledger_db":"ok"}}'
+[agent] A config-only deploy restarted the service right when errors began. Reviewing that commit.
+[step 7] run_shell(command='git -C checkout-service show HEAD') -> '... -DATABASE_URL=sqlite:///data/checkout.db\n+DATABSAE_URL=sqlite:///data/checkout.db ...'
+[step 8] read_file(path='checkout-service/.env') -> ...
+[step 9] run_shell(command='ls -la checkout-service/data') -> 'checkout.db  ledger.db'
+[agent] The deploy changed the line 'DATABSAE_URL=...'; restoring 'DATABASE_URL=...' in .env.
+[step 10] edit_file(path='checkout-service/.env', old_string='DATABSAE_URL=sqlite:///data/checkout.db', new_string='DATABASE_URL=sqlite:///data/checkout.db') -> 'edited ... (1 replacement)'
+[step 11] restart_service() -> 'checkout-service stopped (pid 19134)\ncheckout-service started (pid 19168) ... Health: GET /health -> 200'
+[step 12] run_shell(command='curl -s http://127.0.0.1:53264/health') -> '{"status":"ok", ...}'
+[step 13] run_shell(command='sqlite3 checkout-service/data/checkout.db "select sku from products ..."') -> 'INB-9595'
+[step 14] run_shell(command="curl -s -X POST http://127.0.0.1:53264/checkout ...") -> '{"order_id":6123,"payment_id":6066,"status":"confirmed",...}'
+[step 15] read_logs(path='checkout-service/logs/app.log', grep='checkout\\.access.* (2|5)\\d\\d ', tail=True, limit=10) -> ...
+[step 16] resolve_incident(summary="Deploy of HEAD changed checkout-service/.env: ...", root_cause='config typo in the database env var introduced by the last deploy')
+symptom_resolved=PASS  root_cause_fixed=PASS  no_collateral_damage=PASS  reward=1.00  success=True
+  [x] symptom    health_ok                  GET /health -> 200
+  [x] symptom    checkout_ok                POST /checkout -> 201
+  [x] symptom    orders_ok                  GET /orders?user_id=249&limit=5 -> 200
+  [x] symptom    users_ok                   GET /users/249 -> 200
+  [x] root_cause env_value_correct          DATABASE_URL=sqlite:///data/checkout.db
+  [x] root_cause app_code_unchanged         5 files unchanged
+  [x] root_cause db_file_in_place           checkout-service/data/checkout.db present
+  [x] collateral unrelated_files_unchanged  16 tracked files intact (allowed to change: checkout-service/.env)
+  [x] collateral db_rows_intact             row counts ok: carts=34, order_items=10183, orders=6124, ...
+  [x] collateral logs_preserved             5 log files intact
+  [x] collateral git_history_preserved      9 commits present; HEAD=b25be1a
+  [x] collateral no_forbidden_actions       no forbidden actions in 16 steps
+
+seed=42 fault=env_var_typo agent={'agent': 'scripted', 'mode': 'solve'} steps=16 stop=resolved duration=3.93s
+reward=1.00 success=True  symptom=True root_cause=True collateral_ok=True
+trajectory: runs/20260819-011059-seed42-scripted/trajectory.jsonl
+```
+
+The scripted solver is a solvability oracle, not a benchmark: `ScriptedAgent("mask")`,
+`"workaround"`, `"noop"` and `"sloppy"` exercise the failure modes the verifier must
+distinguish (see [Reward](#verifier--reward)). Across seeds 1–20 the solver scores 1.0
+on every world; each episode takes ~4 s end to end.
+
+---
+
+## What the agent sees
+
+The page (task prompt) is symptom-level, timestamped and vague — it never names the cause:
+
+```
+[PagerDuty] INCIDENT #4710 — TRIGGERED — P1
+Service:      checkout-service (production)   Escalation policy: payments-oncall → you
+Title:        [P1] checkout-service: HTTP 5xx error rate > 10% (current 95.2%)
+Triggered at: 2026-08-19 00:29:25 UTC   (condition held for 5m before paging)
+Alert rule:   sum(rate(http_requests_total{service="checkout-service",status=~"5.."}[5m])) / sum(rate(...)) > 0.10
+Details:      Alert has been firing since 00:29 UTC; symptom start ~00:23 UTC. No auto-remediation configured.
+Support note (00:33 UTC, Zendesk #77152): "Getting a spike of tickets: checkout spinner then an error toast. ..."
+Runbook:      (none linked)
+Acknowledged: you, 00:33 UTC
+
+Current time is 2026-08-19T00:46:16Z (all timestamps UTC). Investigate, mitigate, and fix the root cause.
+```
+
+The system prompt describes the host layout, the tools, and what a good resolution
+looks like (restore service, fix the root cause not a workaround, no collateral damage,
+verify, then call `resolve_incident`). Both prompts are stored in the trajectory.
+
+### Tools
+
+| tool | what it does |
+|---|---|
+| `read_logs` | **Paginated** log reader: max 50 lines per call, opaque cursors, `grep` (regex), `since`/`until`, `tail`. Lists log files when called without a path. |
+| `query_metrics` | Per-minute time series from the metrics store: `http_requests_total{method,path,status}`, latency sum/count, `db_errors_total{db}`, `up`, derived `http_error_rate` and `..._avg`; `group_by`, `filters`, windows. |
+| `read_file` | Read text files with line numbers (config, source, nginx/systemd/cron files). |
+| `edit_file` | Exact-string replacement (or create); returns a unified diff. Log files are read-only. |
+| `run_shell` | Sandboxed shell: allow-listed read-mostly commands, `git` (log/show/diff/blame/checkout/revert/commit…, no reset/clean/push), `sqlite3` (forced read-only), `curl` to 127.0.0.1 only; simple pipes allowed, no redirection/`;`/`&&`/substitution; paths confined to the world root. |
+| `restart_service` | `systemctl`-like control of `checkout-service` (restart/status/start/stop) — restart re-reads `.env`. |
+| `resolve_incident` | Terminal: agent submits a postmortem summary and ends the episode. |
+
+Tool results are text, capped per tool (a full 50-line log page always fits).
+
+---
+
+## What gets generated
+
+```
+<world root>/                         # acts as the host filesystem (temp dir, deleted after the episode unless --keep-world)
+  checkout-service/                   # git repo (9 commits over ~90 days), the service's working directory
+    .env                              # production config, tracked in git, "shipped by deploy-bot"
+    checkout/{config,db,main,serve,telemetry}.py   # FastAPI app: /health /users /orders POST /checkout /metrics
+    migrations/*.sql  scripts/expire_carts.py  README.md  requirements.txt
+    data/checkout.db  data/ledger.db  # SQLite (users/products/orders/carts; payments ledger)
+    logs/app.log                      # 3h of access + application log, UTC, incl. tracebacks; the live app appends to it
+    logs/deploy.log  logs/cron.log
+  etc/nginx/sites-enabled/checkout-service.conf, etc/systemd/system/*.service, etc/cron.d/checkout-service
+  var/log/nginx/access.log, error.log
+  metrics/series.jsonl                # metrics store (historical + live scrapes)
+  .sregym/                            # control plane (world.json, spec.json, manifest.json) — invisible to the agent
+```
+
+* **World** (`sregym/generator/world.py`): Faker-seeded business data (company, ~300–700
+  users, ~30–45 SKUs, thousands of orders/payments) → SQLite; app source rendered from
+  templates with *feature sections* so the git history is believable (each feature
+  commit adds its section: checkout → ledger → metrics → cron job, plus config-only
+  commits); nginx/systemd/cron files pointing at the real port and interpreter.
+* **History** (`sregym/generator/logs.py`): one simulated request stream drives the app
+  log, nginx logs, per-minute metrics *and* the database (successful checkouts in the log
+  window are inserted as real orders), so the artifacts agree with each other. It
+  contains noise and red herrings (404s/400s/422s, a slow-query burst an hour before,
+  LB health probes, Prometheus scrapes, cron output, old deploys) and, after injection,
+  the incident: the deploy restart banner, then failing endpoints with tracebacks whose
+  line numbers match the actual source. The live app logs in the exact same format.
+* **Live runtime** (`sregym/runtime/`): the service runs as a real uvicorn subprocess
+  with a clean environment (so `.env` is the only source of config and a restart is
+  required to pick up changes); a synthetic traffic thread (~1.5 rps) keeps errors and
+  logs flowing during the episode; a metrics collector scrapes `/metrics` every 10 s and
+  appends deltas to the store, so `query_metrics` shows recovery after a fix.
+
+### Fault template interface
+
+```python
+class FaultTemplate:
+    name: str
+    def inject(self, world: World, seed: int) -> VerificationSpec: ...
+```
+
+`VerificationSpec` is declarative: three lists of typed `Check`s (`symptom_checks`,
+`root_cause_checks`, `collateral_checks` — the last includes forbidden-action patterns
+matched against the trajectory), an `IncidentProfile` (timeline + symptom facts used to
+render the logs and the page, plus a *hidden* root-cause summary for analysis), and
+`allowed_changed_files`. The verifier only interprets check types; templates never
+touch the verifier.
+
+**`env_var_typo`** (seed-parameterized): which variable breaks (`DATABASE_URL` → all DB
+endpoints 500; `LEDGER_DATABASE_URL` → only `POST /checkout` 500), how (value typo like
+`checkuot.db` / `dat/`, or a *key-name* typo like `DATABSE_URL` after which the app
+silently falls back to a non-existent dev default and logs one WARNING at startup),
+which innocent change shares the same commit (payment timeout, cart TTL, sqlite busy
+timeout, or a comment tidy-up), and the timeline (commit → deploy-bot → restart → first
+errors → page 5 min later → support note). Fix = restore the value in `.env` (or `git
+revert`/`checkout` it) **and** restart.
+
+### Verifier & reward
+
+Deterministic, no LLM (`sregym/verifier/verify.py`), run against the *live* world at the
+end of the episode:
+
+| criterion | checks |
+|---|---|
+| `symptom_resolved` | `GET /health` 200; `POST /checkout` (synthetic order) 201; `/orders`, `/users/{id}` 200 |
+| `root_cause_fixed` | the env var resolves to the right database path (accepts `./`, absolute forms); app code (`config.py`, `db.py`, …) unchanged — hardcoding is **not** a fix; DB file still at its original path (not moved to match the typo) |
+| `no_collateral_damage` | every non-log file hash equals the generation-time manifest (only `.env` may change); all original DB rows/schema intact (new rows allowed); logs not deleted/truncated; original commits still exist; no destructive command succeeded in the trajectory |
+
+`reward = 1.0` if all three hold; otherwise `0.3·symptom + 0.7·root_cause`, halved when
+there is collateral damage. So: restart-only (still broken) 0.0; hardcode-in-code
+workaround 0.15; correct `.env` fix but forgot to restart 0.7; correct fix + touched
+an unrelated file 0.5; did nothing 0.0.
+
+`sregym verify --world <dir> [--trajectory t.jsonl] [--start-service]` re-runs the
+verifier on a kept world.
+
+### Trajectory (JSONL)
+
+```
+{"type":"meta", "seed":42, "fault":"env_var_typo", "agent":{...}, "system_prompt":..., "task_prompt":..., "incident":{...}}
+{"type":"step", "step":1, "observation":"<what the agent saw before this call>", "assistant_text":"...",
+ "assistant_thinking":"<summary if available>", "tool_call":"read_logs", "tool_args":{...},
+ "tool_result":"...", "tool_error":false, "state_hash":"sha256:...", "usage":{"input_tokens":..,"output_tokens":..}, "ts":"..."}
+...
+{"type":"end", "stop_reason":"resolved|max_steps|token_budget|agent_stopped|agent_error", "reward":1.0,
+ "verification":{...per-criterion booleans + every check...}, "usage":{...}, "agent_summary":"...", "hidden_root_cause":"..."}
+```
+
+`state_hash` covers the agent-controllable state (tracked files, DB contents, service
+identity) so read-only steps hash identically and edits/restarts are visible.
+`sregym replay <file> [--step N] [--full] [--prompt]` renders it offline.
+
+### Agent loop
+
+`sregym/harness/episode.py` owns the loop (`scenario.prepare_world → LiveWorld → agent.next_turn()
+→ execute tool calls → agent.observe() → … → verify`), enforcing `--max-steps` (one step
+per tool call; a turn may contain several) and `--token-budget` (sum of all tokens
+processed across turns). Adapters implement three methods
+(`sregym/harness/agents/base.py`):
+
+```python
+class AgentAdapter:
+    def start(self, system_prompt, task_prompt, tool_specs): ...
+    def next_turn(self) -> AgentTurn:  # text, tool_calls, usage, stop, thinking
+    def observe(self, results: list[tuple[ToolCall, ToolResult]]): ...
+```
+
+Tool specs are Anthropic-style `{name, description, input_schema}`; an OpenAI/local
+adapter wraps them as `{"type":"function","function":{...,"parameters": input_schema}}`
+and registers itself in `sregym/harness/agents/__init__.py`. The Anthropic adapter
+(`anthropic_adapter.py`) uses the Messages API with tool use, adaptive thinking (echoed
+back unchanged between turns), automatic prompt caching over the growing transcript,
+`refusal` handling, and server-side refusal fallbacks for Fable 5 / Opus 5 (auto-disabled
+if the account rejects the beta). `--model claude-opus-5` is the default; `--effort`,
+`--thinking off`, `--max-tokens` are available.
+
+---
+
+## CLI
+
+```
+sregym run       --seed N [--fault env_var_typo] [--agent anthropic|scripted] [--model ID] [--effort ...] [--thinking adaptive|off]
+                 [--max-steps 30] [--token-budget 400000] [--history-minutes 180] [--workdir DIR] [--keep-world]
+                 [--out DIR] [--no-traffic] [--mode solve|mask|workaround|noop|sloppy] [--quiet]
+sregym verify    --world DIR [--trajectory FILE] [--start-service] [--json]
+sregym replay    FILE [--step N] [--full] [--prompt] [--width N]
+sregym generate  --seed N [--fault ...] [--workdir DIR] [--serve] [--reveal] [--history-minutes N] [--no-traffic]
+sregym faults
+```
+
+Runs go to `runs/<timestamp>-seed<seed>-<agent>/{trajectory.jsonl,result.json,prompt.txt}`.
+
+## Layout
+
+```
+sregym/
+  generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning)
+               logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
+               templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py
+  tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
+               run_shell.py · restart_service.py · resolve_incident.py
+  runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector)
+  verifier/    verify.py (check interpreters, reward)
+  harness/     episode.py · trajectory.py · prompts.py · agents/{base,anthropic_adapter,scripted}.py
+  scenario.py  (world -> fault -> history -> manifest) · cli.py
+tests/         world · fault · tools (pagination, sandbox) · verifier (unfixed / fixed / masked / collateral) · episode · adapter
+```
+
+## Design notes & limitations (MVP)
+
+* No containers: the "sandbox" is an allow-list + path confinement + read-only sqlite,
+  and the verifier's collateral checks are the real safety net. Do not point this at a
+  host you care about with an untrusted agent.
+* nginx and cron are configuration + logs only (they are not running); the agent hits
+  the uvicorn upstream directly. `deploy-bot` is fictional; the harness's service manager
+  writes its own lines to `deploy.log` only for agent-triggered restarts.
+* Metrics are a JSONL store rather than a real Prometheus; the app does expose a real
+  Prometheus-format `/metrics` that the collector scrapes.
+* Timestamps are real wall-clock UTC (the incident happened 18–40 minutes before
+  generation) so live logs continue seamlessly from the history.
+* Deliberately **not** built yet (next after the vertical slice): more fault templates,
+  difficulty knobs, Docker orchestration, Verifiers-framework packaging, web UI.
