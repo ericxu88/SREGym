@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from sregym import util
@@ -27,7 +28,9 @@ ALLOWED = {
     "realpath", "readlink", "shasum", "md5", "md5sum", "sha256sum", "true", "false", "test", "[", "strings", "comm",
     "paste", "expand", "fold", "od", "xxd", "hexdump", "seq", "tree", "less", "more", "id", "lsof", "netstat", "ss",
     "python", "python3",  # only `python <repo>/scripts/<name>.py ...` for unmodified, generation-time scripts (see below)
+    "rm",  # only files the agent created itself (not in the generation-time manifest, not under data/logs/...)
 }
+PROTECTED_DIRS = {".git", "data", "logs", "var", "run", "metrics", "__pycache__"}  # never rm-able
 GIT_ALLOWED = {
     "log", "show", "diff", "status", "blame", "grep", "ls-files", "rev-parse", "cat-file", "branch", "tag", "checkout",
     "revert", "reflog", "describe", "shortlog", "stash", "add", "commit", "restore", "switch", "rev-list", "name-rev",
@@ -175,7 +178,32 @@ def _validate_segment(argv: list[str], piped_in: bool, ctx: ToolContext) -> list
         argv = ["cat", *argv[1:]]
     elif prog in ("python", "python3"):
         argv = _validate_python(argv, ctx)
+    elif prog == "rm":
+        _validate_rm(argv, ctx)
     return argv
+
+
+def _validate_rm(argv: list[str], ctx: ToolContext) -> None:
+    """`rm <file>...`: only plain files the agent created during the episode (clean up after yourself).
+    Generation-time files, directories, and anything under data/logs/var/run/.git are refused."""
+    world = ctx.world
+    targets = [a for a in argv[1:] if not a.startswith("-")]
+    for opt in (a for a in argv[1:] if a.startswith("-")):
+        if opt in ("-r", "-R", "--recursive", "-rf", "-fr", "-Rf", "-fR") or ("r" in opt.lstrip("-").lower() and not opt.startswith("--")):
+            raise ToolError("rm -r is not allowed")
+    if not targets:
+        raise ToolError("rm needs a file to remove")
+    for t in targets:
+        full = (world.root / t if not t.startswith("/") else Path(t)).resolve()
+        if not util.is_within(full, world.root):
+            raise ToolError(f"path {t!r} is outside the host filesystem you have access to")
+        rel = util.relpath(full, world.root)
+        if any(part in PROTECTED_DIRS for part in Path(rel).parts):
+            raise ToolError(f"rm {t}: files under data/, logs/, var/, run/ or .git are protected")
+        if full.is_dir():
+            raise ToolError(f"rm {t}: directories cannot be removed")
+        if rel in ctx.manifest_files:
+            raise ToolError(f"rm {t}: this file is part of the deployed system; only files you created yourself can be removed")
 
 
 def _validate_python(argv: list[str], ctx: ToolContext) -> list[str]:
@@ -217,8 +245,8 @@ class RunShellTool(Tool):
     description = (
         "Run a read-mostly shell command in the host root (working directory). Allowed: common inspection commands "
         "(cat, grep, ls, find, head, tail, wc, diff, stat, ps, ...), git (log/show/diff/blame/checkout/revert/commit/... "
-        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only, and `python checkout-service/scripts/<name>.py ...` "
-        "for the ops scripts that ship with the repo. Pipes and "
+        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only, `python checkout-service/scripts/<name>.py ...` "
+        "for the ops scripts that ship with the repo, and rm only for files you created yourself. Pipes and "
 "joining commands with ';', '&&', '||' is fine; no redirection or command substitution (curl -o /dev/null is allowed). "
         "Use edit_file to change files and restart_service to restart."
     )

@@ -92,7 +92,8 @@ def test_control_plane_is_unreachable_from_the_host_root(ctx):
 
 
 @pytest.mark.parametrize("command", [
-    "rm -rf checkout-service/logs", "cat checkout-service/.env > out.txt", "ls; rm -rf checkout-service", "ls && python3 -c 1",
+    "rm -rf checkout-service/logs", "rm checkout-service/.env", "rm checkout-service/README.md", "rm checkout-service/logs/app.log",
+    "rm -r checkout-service/scripts", "cat checkout-service/.env > out.txt", "ls; rm -rf checkout-service", "ls && python3 -c 1",
     "true || cat /etc/passwd", "echo `id`", "echo $(id)",
     "cat /etc/hosts", "cat ../../../../etc/hosts", "ls ~", "git -C checkout-service reset --hard HEAD~1",
     "git -C checkout-service push origin main", "git -C checkout-service -c core.hooksPath=run log",
@@ -133,6 +134,17 @@ def test_run_shell_allows_investigation_commands(ctx):
     assert not r.is_error and r.content.strip().endswith("503")
     r = _call(ctx, "run_shell", command=f"curl -s -o out.txt http://127.0.0.1:{world.port}/health")
     assert r.is_error and not (world.root / "out.txt").exists()
+
+
+def test_agent_can_remove_only_its_own_files(ctx):
+    r = _call(ctx, "edit_file", path="checkout-service/scripts/scratch.py", old_string="", new_string="print(1)\n")
+    assert not r.is_error and (ctx.world.repo / "scripts" / "scratch.py").exists()
+    r = _call(ctx, "run_shell", command="rm checkout-service/scripts/scratch.py")
+    assert not r.is_error and not (ctx.world.repo / "scripts" / "scratch.py").exists()
+    for bad in ["rm checkout-service/scripts/expire_carts.py", "rm checkout-service/.env", "rm -r checkout-service/scripts", "rm checkout-service/data/ledger.db"]:
+        r = _call(ctx, "run_shell", command=bad)
+        assert r.is_error, (bad, r.content)
+    assert (ctx.world.repo / "scripts" / "expire_carts.py").exists() and ctx.world.env_file.exists()
 
 
 def test_edit_file_requires_unique_match_and_reports_diff(ctx):

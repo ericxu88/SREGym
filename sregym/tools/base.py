@@ -32,6 +32,15 @@ class ToolContext:
     services: "ServiceManager | None" = None
     max_output_chars: int = MAX_OUTPUT_CHARS
     _allowed_scripts: dict[str, str] | None = field(default=None, repr=False)
+    _manifest_files: dict[str, str] = field(default_factory=dict, repr=False)
+
+    @property
+    def manifest_files(self) -> dict[str, str]:
+        """Generation-time tracked files (root-relative -> sha256). Anything not listed (and not under the
+        excluded runtime dirs) was created during the episode."""
+        if self._allowed_scripts is None:
+            _ = self.allowed_scripts
+        return self._manifest_files
 
     @property
     def allowed_scripts(self) -> dict[str, str]:
@@ -42,6 +51,7 @@ class ToolContext:
                 files = self.world.load_manifest().get("files", {})
             except (OSError, ValueError):
                 files = {}
+            self._manifest_files = dict(files)
             self._allowed_scripts = {rel: sha for rel, sha in files.items()
                                      if rel.startswith(f"{SERVICE_NAME}/scripts/") and rel.endswith(".py")}
         return self._allowed_scripts
