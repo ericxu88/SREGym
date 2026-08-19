@@ -114,6 +114,18 @@ All numbers are from `sregym sweep`, deterministic verifier, no LLM judge; seeds
 Per variant (same run): `DATABASE_URL` value-typo 74%, key-name typo 45%, `LEDGER_DATABASE_URL` value 47% / key 45% —
 the silent-fallback key-name variant is the harder one. Full report: `sweeps/baseline-sonnet5-lean-steps10/report.md` (local).
 
+**`ledger_divergence` — reference configuration: lean prompt, `max_steps=22`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 17/20 = 85% | 64–95% | 0.91 | remediation_incomplete 1 · never_found 1 · collateral 1 (stray helper script*) | $0.26 |
+| claude-sonnet-5 | **lean, 22 steps** | **13/20 = 65%** | 43–82% | 0.825 | remediation_incomplete 4 · fixed_not_restarted 1 · never_found 2 | $0.19 |
+
+The causal-depth (deferred-restart) variant did not reduce success (89% vs 82% at 30 steps): the model reads
+`git log -p -- .env` rather than trusting `git show HEAD`. Episodes are ~2× longer than `env_var_typo` because a
+complete fix also requires the data backfill; at 22 steps the typical failure is "config fixed and restarted,
+backfill not reached". (*The stray-script case led to letting agents `rm` files they created themselves.)
+
 Calibration ladder (claude-sonnet-5, seeds 1–20):
 
 | configuration | success | 95% CI | failure mode |
@@ -318,7 +330,8 @@ outages after the SDK's own retries) are retried with backoff and recorded as
 - success rate with a Wilson 95% CI, mean reward, reward histogram
 - **failure taxonomy** (deterministic, from the verifier + trajectory): `success`,
   `collateral_damage`, `workaround` (service restored without fixing the config),
-  `fixed_not_restarted`, `wrong_fix` (edited the config, still broken), `masked`
+  `fixed_not_restarted`, `remediation_incomplete` (config fixed and restarted, data repair missing),
+  `wrong_fix` (edited the config, still broken), `masked`
   (declared resolved without fixing), `gave_up`, `never_found`, `infra_error`
 - breakdown by fault variant (env var × typo kind, innocent co-change), steps/tokens/
   duration/cost per episode, and a triage table of failed seeds with the hidden root cause

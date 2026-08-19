@@ -30,8 +30,8 @@ from sregym.harness.agents import make_agent
 from sregym.harness.episode import EpisodeConfig, run_episode
 from sregym.harness.trajectory import read_trajectory
 
-OUTCOMES = ["success", "collateral_damage", "workaround", "fixed_not_restarted", "wrong_fix", "masked", "gave_up",
-            "never_found", "infra_error"]
+OUTCOMES = ["success", "collateral_damage", "workaround", "fixed_not_restarted", "remediation_incomplete", "wrong_fix",
+            "masked", "gave_up", "never_found", "infra_error"]
 
 # $ per million tokens: (input, output). Cache reads bill at 10% of input, cache writes at 125%.
 PRICES = {
@@ -108,6 +108,21 @@ def _git_subcommands(command: str) -> list[str]:
     return subs
 
 
+def _restarted_after_config_change(steps: list[dict[str, Any]]) -> bool:
+    last_edit = None
+    for s in steps:
+        if s.get("tool_error"):
+            continue
+        args = s.get("tool_args") or {}
+        if (s.get("tool_call") == "edit_file" and str(args.get("path", "")).endswith(".env")) or (
+            s.get("tool_call") == "run_shell" and any(sub in ("checkout", "revert", "restore") for sub in _git_subcommands(str(args.get("command", ""))))
+        ):
+            last_edit = s.get("step", 0)
+    if last_edit is None:
+        return False
+    return any(s.get("tool_call") == "restart_service" and not s.get("tool_error") and s.get("step", 0) > last_edit for s in steps)
+
+
 def touched_config(steps: list[dict[str, Any]]) -> bool:
     """Did the agent change the configuration (edit .env, or restore it via git)?"""
     for s in steps:
@@ -134,6 +149,9 @@ def classify_outcome(result: dict[str, Any], steps: list[dict[str, Any]] | None 
     if s and not r:
         return "workaround"  # service restored without fixing the configuration (hardcode, copied db, ...)
     if r and not s:
+        # config is right; was the service restarted after the fix? then the remaining gap is data/remediation
+        if steps and _restarted_after_config_change(steps):
+            return "remediation_incomplete"  # e.g. diverted payments never backfilled
         return "fixed_not_restarted"
     if steps and touched_config(steps):
         return "wrong_fix"  # edited the config but got it wrong

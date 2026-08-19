@@ -33,6 +33,11 @@ def test_outcome_taxonomy():
     assert classify_outcome(_res(True, True, False)) == "collateral_damage"
     assert classify_outcome(_res(True, False, True)) == "workaround"
     assert classify_outcome(_res(False, True, True)) == "fixed_not_restarted"
+    fixed_then_restarted = env_edit + [{"step": 2, "tool_call": "restart_service", "tool_args": {}, "tool_error": False}]
+    env_edit[0]["step"] = 1
+    assert classify_outcome(_res(False, True, True), fixed_then_restarted) == "remediation_incomplete"
+    restarted_then_fixed = [{"step": 1, "tool_call": "restart_service", "tool_args": {}, "tool_error": False}] + env_edit
+    assert classify_outcome(_res(False, True, True), restarted_then_fixed) == "fixed_not_restarted"
     assert classify_outcome(_res(False, False, True), env_edit) == "wrong_fix"
     assert classify_outcome(_res(False, False, True), []) == "masked"
     assert classify_outcome(_res(False, False, True, stop="agent_stopped")) == "gave_up"
