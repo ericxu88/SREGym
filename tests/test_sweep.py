@@ -9,7 +9,7 @@ import pytest
 
 from sregym.cli import main as cli_main
 from sregym.harness.sweep import (
-    SweepConfig, build_report, classify_outcome, estimate_cost, parse_seeds, run_sweep, wilson_ci,
+    SweepConfig, classify_outcome, estimate_cost, parse_seeds, run_sweep, wilson_ci,
 )
 from tests.conftest import HISTORY_MINUTES
 

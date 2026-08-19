@@ -193,6 +193,16 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rescore(args: argparse.Namespace) -> int:
+    from sregym.harness.sweep import rescore_forbidden_actions
+
+    out = rescore_forbidden_actions(Path(args.sweep_dir))
+    print(f"examined {out['examined']} results; changed {len(out['changed'])}")
+    for c in out["changed"]:
+        print(f"  seed {c['seed']}: {c['outcome']} {c['reward']} -> {c['new_outcome']} {c['new_reward']}")
+    return 0
+
+
 def _cmd_faults(args: argparse.Namespace) -> int:
     from sregym.faults.base import list_faults
 
@@ -274,6 +284,10 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("sweep_dir")
     rep.add_argument("--json", action="store_true")
     rep.set_defaults(func=_cmd_report)
+
+    rs = sub.add_parser("rescore", help="re-judge trajectory-only checks of saved sweep results with the current verifier")
+    rs.add_argument("sweep_dir")
+    rs.set_defaults(func=_cmd_rescore)
 
     f = sub.add_parser("faults", help="list fault templates")
     f.set_defaults(func=_cmd_faults)

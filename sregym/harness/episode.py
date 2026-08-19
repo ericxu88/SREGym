@@ -112,7 +112,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         seed=config.seed, fault=config.fault, world_root=str(world.root), world_base=str(world.base), port=world.port, agent=agent.describe(),
         fault_params=dict(world.extra.get("fault_params", {})),
         max_steps=config.max_steps, token_budget=config.token_budget, system_prompt=system_prompt, task_prompt=task_prompt,
-        incident=spec.incident.to_dict(), started_at=util.fmt_iso(datetime.now(timezone.utc)),
+        incident=spec.incident.to_dict(), spec=spec.to_dict(), started_at=util.fmt_iso(datetime.now(timezone.utc)),
     )
     live = LiveWorld(world, traffic_rps=config.traffic_rps, live_traffic=config.live_traffic)
     ctx = ToolContext(world, live.services)

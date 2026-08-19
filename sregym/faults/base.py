@@ -106,6 +106,7 @@ class FaultTemplate:
 
     name: str = "base"
     description: str = ""
+    forbidden_rules: dict[str, Any] = {}  # default structural rules for the forbidden_actions check
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
         """Mutate the (healthy) world into an incident and describe how to verify the fix.

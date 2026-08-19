@@ -43,7 +43,7 @@ NULL_SINK = "/dev/null"
 TIMEOUT_S = 25
 
 
-def _tokenize(command: str) -> list[tuple[str, list[str]]]:
+def tokenize_command(command: str) -> list[tuple[str, list[str]]]:
     """Split into (operator, argv) items where operator is the token joining this command to the
     previous one ('' for the first, then '|', ';', '&&' or '||'). Anything else is rejected."""
     lex = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -195,7 +195,7 @@ class RunShellTool(Tool):
         command = str(args.get("command", "")).strip()
         if not command:
             raise ToolError("command is required")
-        items = _tokenize(command)
+        items = tokenize_command(command)
         parts: list[str] = []
         for op, argv in items:
             argv = _validate_segment(argv, piped_in=(op == "|"), ctx=ctx)

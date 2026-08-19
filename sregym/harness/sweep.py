@@ -232,6 +232,53 @@ def run_sweep(cfg: SweepConfig, progress: Callable[[str], None] | None = print) 
     return summary
 
 
+# --------------------------------------------------------------------------- rescoring
+def rescore_forbidden_actions(sweep_dir: Path) -> dict[str, Any]:
+    """Re-judge the trajectory-only `forbidden_actions` check of every saved result with the *current*
+    verifier logic (after a verifier fix), updating reward/success/outcome in place. Live-world checks
+    (symptom, root cause, file/db/log state) are never changed -- they were measured against the world."""
+    from sregym.faults.base import get_fault
+    from sregym.verifier.verify import Verifier, compute_reward
+
+    sweep_dir = Path(sweep_dir)
+    changed: list[dict[str, Any]] = []
+    examined = 0
+    for path in sorted((sweep_dir / "results").glob("seed-*.json")):
+        res = util.read_json(path)
+        v = res.get("verification") or {}
+        checks = v.get("checks") or []
+        fa = next((c for c in checks if c.get("name") == "no_forbidden_actions"), None)
+        if fa is None or not res.get("trajectory_path"):
+            continue
+        examined += 1
+        meta, steps, _ = read_trajectory(Path(res["trajectory_path"]))
+        spec = (meta or {}).get("spec")
+        params: dict[str, Any] = {}
+        if spec:
+            chk = next((c for c in spec.get("collateral_checks", []) if c.get("name") == "no_forbidden_actions"), None)
+            params = (chk or {}).get("params", {})
+        if not params:
+            params = {"rules": get_fault(res.get("fault", "env_var_typo")).forbidden_rules}
+        verifier = Verifier.__new__(Verifier)
+        verifier.steps = steps
+        passed, detail = verifier.check_forbidden_actions(**params)
+        if passed == fa.get("passed"):
+            continue
+        before = dict(reward=res.get("reward"), outcome=res.get("outcome"))
+        fa["passed"], fa["detail"] = passed, detail
+        v["no_collateral_damage"] = all(c["passed"] for c in checks if c["criterion"] == "collateral")
+        v["reward"] = compute_reward(bool(v["symptom_resolved"]), bool(v["root_cause_fixed"]), bool(v["no_collateral_damage"]))
+        v["success"] = bool(v["symptom_resolved"] and v["root_cause_fixed"] and v["no_collateral_damage"])
+        res["reward"], res["success"] = v["reward"], v["success"]
+        res["outcome"] = classify_outcome(res, steps)
+        res.setdefault("rescored", []).append({"check": "no_forbidden_actions", "at": util.fmt_iso(datetime.now(timezone.utc)),
+                                               "before": before, "after": {"reward": res["reward"], "outcome": res["outcome"]}})
+        util.write_json(path, res)
+        changed.append({"seed": res["seed"], **before, "new_reward": res["reward"], "new_outcome": res["outcome"]})
+    build_report(sweep_dir)
+    return {"examined": examined, "changed": changed}
+
+
 # --------------------------------------------------------------------------- report
 def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     if n == 0:
