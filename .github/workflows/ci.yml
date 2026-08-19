@@ -20,8 +20,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
-      - name: Install system tools used by the sandboxed shell
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3 curl git
+      - name: Ensure system tools used by the sandboxed shell
+        timeout-minutes: 5
+        run: |
+          missing=""
+          for t in sqlite3 curl git; do command -v "$t" >/dev/null || missing="$missing $t"; done
+          if [ -n "$missing" ]; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+          sqlite3 --version; curl --version | head -1; git --version
       - name: Install package
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
       - name: Run tests
