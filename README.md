@@ -121,6 +121,18 @@ the silent-fallback key-name variant is the harder one. Full report: `sweeps/bas
 | claude-sonnet-5 | lean, 30 steps | 17/20 = 85% | 64–95% | 0.91 | remediation_incomplete 1 · never_found 1 · collateral 1 (stray helper script*) | $0.26 |
 | claude-sonnet-5 | **lean, 22 steps** | **13/20 = 65%** | 43–82% | 0.825 | remediation_incomplete 4 · fixed_not_restarted 1 · never_found 2 | $0.19 |
 
+**`unapplied_migration` — reference configuration: lean prompt, `max_steps=12`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (0 workarounds; forgotten migrations were authored, not patched around) | $0.24 |
+| claude-sonnet-5 | **lean, 12 steps** | **11/20 = 55%** | 34–74% | 0.56 | never_found 8 · workaround 1 (rolled the release back with `git revert`) | $0.11 |
+
+At 12 steps the budget separates by *fix difficulty* rather than pure truncation: shipped-migration variants
+67–100%, forgotten-migration 0–33% (authoring the migration costs 5–8 extra calls; the fix landed at median call 11,
+range 8–19). Rolling back the release restores service but is scored as a workaround — the root cause is the
+schema, and the verifier checks that the application code is unchanged.
+
 The causal-depth (deferred-restart) variant did not reduce success (89% vs 82% at 30 steps): the model reads
 `git log -p -- .env` rather than trusting `git show HEAD`. Episodes are ~2× longer than `env_var_typo` because a
 complete fix also requires the data backfill; at 22 steps the typical failure is "config fixed and restarted,
