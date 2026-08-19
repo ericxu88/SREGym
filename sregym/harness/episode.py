@@ -13,6 +13,7 @@ from sregym.generator.world import World
 from sregym.harness.agents.base import AgentAdapter, ToolCall
 from sregym.harness.prompts import build_system_prompt, build_task_prompt
 from sregym.harness.trajectory import Step, TrajectoryWriter
+from sregym.runtime.cron import CronRunner
 from sregym.runtime.metrics import MetricsCollector
 from sregym.runtime.services import ServiceManager
 from sregym.runtime.traffic import TrafficGenerator
@@ -70,10 +71,12 @@ class LiveWorld:
         self.services = ServiceManager(world)
         self.traffic = TrafficGenerator(world, rps=traffic_rps) if live_traffic else None
         self.collector = MetricsCollector(world)
+        self.cron = CronRunner(world)  # runs etc/cron.d jobs (deployed repo scripts only)
 
     def start(self) -> str:
         msg = self.services.start(announce=False)  # in the fiction the process has been up since the deploy
         self.collector.start()
+        self.cron.start()
         if self.traffic:
             self.traffic.start()
         return msg
@@ -81,6 +84,7 @@ class LiveWorld:
     def stop(self) -> None:
         if self.traffic:
             self.traffic.stop()
+        self.cron.stop()
         self.collector.stop()
         self.services.close()
 

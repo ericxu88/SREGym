@@ -41,6 +41,7 @@ _APP_FILES = {
     "checkout/serve.py": "checkout/serve.py",
     "migrations/001_init.sql": "migrations/001_init.sql",
     "scripts/migrate.py": "scripts/migrate.py",
+    "scripts/archive_orders.py": "scripts/archive_orders.py",
 }
 # files that only exist once a section exists
 _SECTION_FILES = {

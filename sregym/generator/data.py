@@ -146,7 +146,13 @@ def generate_business_data(seed: int, now: datetime, history_end: datetime) -> B
     for cid in range(1, rng.randint(12, 40)):
         created = history_end - timedelta(minutes=rng.uniform(5, 600))
         expires = created + timedelta(minutes=45)
-        status = "active" if expires > history_end else rng.choice(["expired", "expired", "converted"])
+        if expires > history_end - timedelta(minutes=60):
+            # still active at generation time; keep it alive well past any episode so the (now real) cron job
+            # that expires carts does not modify generation-time rows during verification
+            status = "active"
+            expires = now + timedelta(hours=rng.uniform(6, 24))
+        else:
+            status = rng.choice(["expired", "expired", "converted"])
         data.carts.append({"id": cid, "user_id": rng.choice(data.users)["id"], "status": status,
                            "created_at": _iso(created), "expires_at": _iso(expires)})
     return data

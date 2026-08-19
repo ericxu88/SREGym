@@ -202,8 +202,12 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
     method, template = tp.pick_endpoint(rng)
     key = f"{method} {template}"
     failing = bool(inc) and ts >= inc.incident_at and key in inc.failing_endpoints
+    burst = inc.extra.get("lock_burst") if inc else None
+    if failing and burst:  # intermittent: only while the periodic job holds the lock
+        phase = (ts - inc.incident_at).total_seconds() % float(burst["period_s"])
+        failing = burst["offset_s"] <= phase < burst["offset_s"] + burst["duration_s"]
     core_broken = bool(inc) and inc.broken_db == "core"
-    override = (inc.extra.get("endpoint_errors") or {}).get(key) if failing else None  # {"error":..., "tb":...}
+    override = (inc.extra.get("endpoint_errors") or {}).get(key) if failing else None  # {"error":..., "tb":..., "latency_ms":...}
     slow = slow_window and template != "/checkout" and rng.random() < 0.4
     latency = tp.latency_ms(rng, template, slow=slow)
     warn = [f"slow database transaction ({latency:.0f}ms) db=core"] if slow else None
@@ -221,6 +225,8 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
             error = override["error"] if override else inc.error_message
             tb_key = override["tb"] if override else ("checkout" if core_broken else "checkout_ledger")
             latency = tp.latency_ms(rng, "/orders")  # fails fast
+            if override and override.get("latency_ms"):
+                latency = float(override["latency_ms"]) + rng.uniform(0, 30)
         elif r < 0.012:
             status = 422
             extra = {}
@@ -341,7 +347,7 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     slow_end = slow_start + timedelta(minutes=rng.uniform(2, 4)) if slow_start else None
 
     gap: tuple[datetime, datetime] | None = None
-    if incident:
+    if incident and not incident.extra.get("no_restart"):
         old_pid, new_pid = rng.randint(2000, 30000), rng.randint(30001, 60000)
         gap = _restart_sequence(sim, incident.restart_at, incident.deploy_commit, version, n_keys,
                                 incident.config_warnings, old_pid, new_pid)
@@ -418,7 +424,7 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     sim.nginx_error.sort(key=lambda x: x[0])
     (nginx_dir / "error.log").write_text("".join(line + "\n" for _, line in sim.nginx_error))
     _write_deploy_log(world, incident, rng)
-    _write_cron_log(world, incident, rng, start, end)
+    _write_cron_log(world, incident, rng, start, end, orders_range=(max_order, sim.max_order_id))
     _write_metrics(world, sim)
     _insert_orders(world, sim)
 
@@ -434,8 +440,8 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
 
 def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: random.Random) -> None:
     lines: list[str] = []
-    custom = incident.extra.get("deploys") if incident else None
-    if custom:
+    custom = incident.extra.get("deploys") if (incident and "deploys" in incident.extra) else None
+    if custom is not None:
         base_commits = world.commits[: int(incident.extra.get("n_base_commits", len(world.commits) - len(custom)))]
     else:
         base_commits = world.commits if incident is None else world.commits[:-1]
@@ -448,7 +454,7 @@ def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: rando
             restart_at = incident.restart_at if d.get("restart") == "restart" else None
             lines += _deploy_lines(util.parse_iso(d["when"]), d["sha"], d["author"], d["message"], config_only=bool(d.get("config_only")),
                                    rng=rng, restart_at=restart_at, restart=d.get("restart", "restart"))
-    elif incident:
+    elif incident and custom is None:
         lines += _deploy_lines(incident.deploy_at, incident.deploy_commit[:7], incident.deploy_author, incident.deploy_message,
                                config_only=True, rng=rng, restart_at=incident.restart_at)
     (world.log_dir / "deploy.log").write_text("".join(l + "\n" for l in lines))
@@ -482,20 +488,39 @@ def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_on
     return out
 
 
-def _write_cron_log(world: World, incident: IncidentProfile | None, rng: random.Random, start: datetime, end: datetime) -> None:
-    lines: list[str] = []
+def _write_cron_log(world: World, incident: IncidentProfile | None, rng: random.Random, start: datetime, end: datetime,
+                    orders_range: tuple[int, int] = (0, 0)) -> None:
+    entries: list[tuple[datetime, str]] = []
     ttl = util.parse_env_file(world.env_file.read_text()).get("CART_TTL_MINUTES", "45")
+    core_unreachable = bool(incident) and incident.broken_db == "core" and not incident.extra.get("lock_burst") and incident.failing_endpoints
     t = start.replace(minute=(start.minute // 15) * 15, second=0, microsecond=0)
     while t < end:
         if t >= start:
-            stamp = (t + timedelta(seconds=rng.uniform(0.2, 1.8))).strftime("%Y-%m-%d %H:%M:%S")
-            if incident and incident.broken_db == "core" and t >= incident.incident_at:
-                lines.append(f"{stamp} expire_carts: ERROR OperationalError: unable to open database file")
+            at = t + timedelta(seconds=rng.uniform(0.2, 1.8))
+            if core_unreachable and t >= incident.incident_at and "unable to open" in (incident.error_message or ""):
+                entries.append((at, f"{at:%Y-%m-%d %H:%M:%S} expire_carts: ERROR OperationalError: unable to open database file"))
             else:
                 scanned = rng.randint(3, 14)
-                lines.append(f"{stamp} expire_carts: scanned {scanned} active carts, expired {rng.randint(0, min(3, scanned))} (ttl={ttl}m)")
+                entries.append((at, f"{at:%Y-%m-%d %H:%M:%S} expire_carts: scanned {scanned} active carts, expired {rng.randint(0, min(3, scanned))} (ttl={ttl}m)"))
         t += timedelta(minutes=15)
-    (world.log_dir / "cron.log").write_text("".join(l + "\n" for l in lines))
+    burst = incident.extra.get("lock_burst") if incident else None
+    if burst:
+        reload_at = incident.incident_at - timedelta(seconds=rng.uniform(20, 70))
+        entries.append((reload_at, f"{reload_at:%Y-%m-%d %H:%M:%S} crond[{rng.randint(300, 900)}]: (*system*{SERVICE_NAME}) RELOAD (/etc/cron.d/{SERVICE_NAME})"))
+        t = incident.incident_at.replace(second=0, microsecond=0)
+        n0, n1 = orders_range
+        span_s = max(1.0, (end - start).total_seconds())
+        while t < end:
+            if t >= incident.incident_at - timedelta(seconds=5):
+                done = t + timedelta(seconds=burst["offset_s"] + burst["duration_s"] + rng.uniform(0.1, 0.6))
+                if done < end:
+                    n_at = int(n0 + (n1 - n0) * min(1.0, (t - start).total_seconds() / span_s))
+                    held = burst["duration_s"] * (0.9 + 0.2 * (n_at / max(1, n1))) + rng.uniform(-0.6, 0.6)
+                    entries.append((done, burst["cron_line"].format(stamp=f"{done:%Y-%m-%d %H:%M:%S}", n=n_at + rng.randint(-4, 4),
+                                                                    checksum="%08x" % rng.getrandbits(32), held=f"{held:.1f}")))
+            t += timedelta(seconds=burst["period_s"])
+    entries.sort(key=lambda e: e[0])
+    (world.log_dir / "cron.log").write_text("".join(l + "\n" for _, l in entries))
 
 
 def _write_metrics(world: World, sim: _Sim) -> None:

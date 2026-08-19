@@ -281,6 +281,18 @@ unchanged — patching or reverting the code is a workaround. Verifier generaliz
 hashes over generation-time columns, an additive-only schema rule (new tables/columns/indexes fine; dropping or
 retyping anything is damage), glob allow-lists, and a `db_query` check.
 
+**`cron_write_lock`** (rung 3, template #3): a "temporary" orders-archive backfill was dropped into
+`etc/cron.d/checkout-service` at `* * * * *`; each run opens `BEGIN IMMEDIATE`, does a slow verification
+scan, and holds the core DB's write lock ~20–40 s — so `POST /checkout` fails with `database is locked`
+after the 5 s busy timeout, **in bursts aligned to the minute**. Reads and `/health` are fine, and there is
+**no deploy to blame**: the evidence is the periodicity, `archive_orders:` lines in cron.log (with held-time),
+a crond RELOAD line, and the cron file's fresh mtime. The live world runs a real cron daemon (deployed,
+hash-pinned repo scripts only — a script the agent edits is skipped, and cron.log says so), so the incident
+keeps reproducing during the episode. Fix = remove/comment the entry (once-a-day off-hours also accepted);
+editing the job script or the app is a workaround. Verification uses a **probe window**: after waiting out any
+in-flight lock, `POST /checkout` must succeed every 5 s for 65 s with no new `database is locked` lines — a
+restart-only "fix" gets caught by the next burst.
+
 ### Verifier & reward
 
 Deterministic, no LLM (`sregym/verifier/verify.py`), run against the *live* world at the
@@ -384,10 +396,10 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning)
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
-  runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector)
+  runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector) · cron.py (cron daemon)
   verifier/    verify.py (check interpreters, reward)
   harness/     episode.py · trajectory.py · prompts.py · sweep.py (calibration runner + report) · agents/{base,anthropic_adapter,scripted}.py
   scenario.py  (world -> fault -> history -> manifest) · cli.py

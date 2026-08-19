@@ -187,10 +187,8 @@ class LedgerDivergence(FaultTemplate):
         conn.execute("VACUUM")
         conn.close()
         import os
-        import time
 
-        ts = time.mktime(taken_at.timetuple())
-        os.utime(dest, (ts, ts))
+        os.utime(dest, (taken_at.timestamp(), taken_at.timestamp()))
 
     @staticmethod
     def _bump_version(world: World) -> str:

@@ -174,4 +174,4 @@ def list_faults() -> dict[str, str]:
 
 def _ensure_loaded() -> None:
     # import built-in templates so they register themselves
-    from sregym.faults import env_var_typo, ledger_divergence, unapplied_migration  # noqa: F401
+    from sregym.faults import cron_write_lock, env_var_typo, ledger_divergence, unapplied_migration  # noqa: F401

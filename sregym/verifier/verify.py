@@ -138,6 +138,63 @@ class Verifier:
             return True, f"{method} {path} -> {status}; {then_sql['db']} has {n} row(s) for {then_sql['response_key']}={value}"
         return True, f"{method} {path} -> {status}"
 
+    def check_probe_window(self, seconds: int, interval: int, method: str, path: str, expect_status: list[int],
+                           body: Any = None, log: str | None = None, forbid_pattern: str | None = None,
+                           lock_db: str | None = None, lock_wait_s: int = 60) -> tuple[bool, str]:
+        """For intermittent symptoms: every request over a window must succeed and the log must stay clean.
+        First waits (up to ``lock_wait_s``) for any in-flight write lock on ``lock_db`` to clear, so a fix applied
+        seconds before verification is not penalised for a job that was already running; an unfixed world
+        re-enters the failing state within the window."""
+        if lock_db:
+            db = self.world.root / lock_db
+            deadline = time.time() + lock_wait_s
+            while time.time() < deadline:
+                try:
+                    conn = sqlite3.connect(db, timeout=0.5)
+                    try:
+                        conn.execute("BEGIN IMMEDIATE")
+                        conn.rollback()
+                        break
+                    finally:
+                        conn.close()
+                except sqlite3.OperationalError:
+                    time.sleep(1.0)
+        log_path = self.world.root / log if log else None
+        start_lines = util.count_lines(log_path) if log_path and log_path.exists() else 0
+        rx = re.compile(forbid_pattern) if forbid_pattern else None
+        started = time.time()
+        n = 0
+        while time.time() - started < seconds:
+            n += 1
+            status, text = util.http_request(method, self.base_url + path, body=body, timeout=12)
+            if status not in expect_status:
+                return False, f"{method} {path} -> {status if status else 'timeout/connection error'} on probe {n} ({time.time() - started:.0f}s into the window): {text[:120]}"
+            time.sleep(interval)
+        if rx and log_path and log_path.exists():
+            with open(log_path, errors="replace") as f:
+                new_lines = f.read().splitlines()[start_lines:]
+            hits = [l for l in new_lines if rx.search(l)]
+            if hits:
+                return False, f"{len(hits)} new log line(s) matching {forbid_pattern!r} during the {seconds}s window, e.g. {hits[0][-120:]}"
+        return True, f"{n} probes of {method} {path} succeeded over {seconds}s" + (f"; no {forbid_pattern!r} in {log}" if rx else "")
+
+    def check_cron_job_disabled(self, file: str, script: str) -> tuple[bool, str]:
+        """The cron entry running ``script`` is removed/commented, or rescheduled to at most once a day."""
+        from sregym.runtime.cron import parse_crontab
+
+        path = self.world.root / file
+        if not path.exists():
+            return True, f"{file} removed"
+        jobs = [j for j in parse_crontab(path.read_text()) if script in j["command"]]
+        if not jobs:
+            return True, f"no active cron entry runs {script}"
+        for j in jobs:
+            minute, hour = j["schedule"][0], j["schedule"][1]
+            if minute.isdigit() and hour.isdigit():
+                continue  # once a day: acceptable
+            return False, f"{script} still scheduled as '{' '.join(j['schedule'])}' (runs more than once a day)"
+        return True, f"{script} rescheduled to once a day ({' '.join(jobs[0]['schedule'])})"
+
     def check_db_query(self, db: str, sql: str, expect_min: int = 1, describe: str = "") -> tuple[bool, str]:
         """A read-only SQL count against a world database must be >= expect_min (e.g. a column exists,
         a migration version is recorded)."""
@@ -297,8 +354,9 @@ class Verifier:
             size = p.stat().st_size
             if size < info["size"]:
                 problems.append(f"{rel} truncated ({size} < {info['size']} bytes)")
-            elif util.head_hash(p) != info["head_hash"]:
-                problems.append(f"{rel} rewritten (head changed)")
+            elif util.head_hash(p, nbytes=min(int(info["size"]), 4096)) != info["head_hash"]:
+                # hash exactly the recorded original prefix: appends to a small log must not read as a rewrite
+                problems.append(f"{rel} rewritten (original content changed)")
         if problems:
             return False, "; ".join(problems)
         return True, f"{len(self.manifest['logs'])} log files intact"

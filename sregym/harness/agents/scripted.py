@@ -79,6 +79,38 @@ class ScriptedAgent(AgentAdapter):
             return bad, good
         return None
 
+    # ------------------------------------------------------------------ cron write lock script
+    def _script_cron_lock(self) -> Generator[ToolCall, ToolResult | None, None]:
+        self.notes.append("'database is locked' in bursts: something is holding the write lock periodically. Checking cron.")
+        yield self._call("read_logs", path=f"{REPO}/logs/cron.log", tail=True, limit=12)
+        cron = yield self._call("run_shell", command="cat etc/cron.d/checkout-service; ls -la etc/cron.d")
+        if self.mode == "mask":
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Restarted the service.", root_cause="transient lock contention")
+            return
+        if self.mode == "workaround":
+            self.notes.append("Making the archive job commit per batch so it stops holding the lock.")
+            yield self._call("edit_file", path=f"{REPO}/scripts/archive_orders.py",
+                             old_string="        conn.execute(\"BEGIN IMMEDIATE\")",
+                             new_string="        # conn.execute(\"BEGIN IMMEDIATE\")  # hotfix: do not hold the write lock")
+            yield self._call("resolve_incident", summary="Patched the job to not hold the lock.", root_cause="archive job")
+            return
+        line = next((l for l in (cron.content if cron else "").splitlines() if "archive_orders" in l and not l.strip().startswith("#")), None)
+        if line is None:
+            yield self._call("resolve_incident", summary="Could not find the job.", root_cause="unknown")
+            return
+        self.notes.append("An every-minute archive backfill was added to cron; each run holds the write lock. Disabling it.")
+        yield self._call("edit_file", path="etc/cron.d/checkout-service", old_string=line,
+                         new_string="# DISABLED during INC (held the core db write lock every minute): " + line.lstrip("$ "))
+        if self.mode == "sloppy":
+            yield self._call("edit_file", path=f"{REPO}/README.md", old_string="# checkout-service", new_string="# checkout-service (fixed)")
+        yield self._call("read_logs", path=f"{REPO}/logs/cron.log", tail=True, limit=4)
+        yield self._call("resolve_incident",
+                         summary=("A cron entry added to etc/cron.d ran scripts/archive_orders.py every minute; each run held a "
+                                  "~30s write transaction on data/checkout.db, so checkout writes hit the 5s busy timeout in bursts. "
+                                  "Commented the entry out; no restart or code change needed."),
+                         root_cause="every-minute archive cron job holding the core db write lock")
+
     # ------------------------------------------------------------------ unapplied migration script
     _MIGRATION_KNOWLEDGE = {  # test-oracle knowledge of the three feature variants (column -> table, full column set, name)
         "coupon_code": ("orders", [("coupon_code", "TEXT"), ("discount_cents", "INTEGER NOT NULL DEFAULT 0")], "003_coupons"),
@@ -199,6 +231,9 @@ class ScriptedAgent(AgentAdapter):
         r = yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.access.* 5\d\d ", tail=True, limit=15)
         if r and ("no such column" in r.content or "has no column named" in r.content):
             yield from self._script_migration(r.content)
+            return
+        if r and "database is locked" in r.content:
+            yield from self._script_cron_lock()
             return
         self.notes.append("500s carry 'unable to open database file'. Checking for restarts/config warnings around the onset.")
         yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.serve|checkout\.config|Shutting down", tail=True, limit=15)
