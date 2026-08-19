@@ -58,6 +58,7 @@ class SweepConfig:
     retries: int = 2  # per seed, for infra errors only
     rerun: bool = False  # ignore existing results
     keep_worlds: bool = False
+    prompt_style: str = "full"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -159,7 +160,7 @@ def _run_one(cfg: SweepConfig, seed: int, attempt: int) -> dict[str, Any]:
         ep_dir = cfg.out_dir / "episodes" / f"seed-{seed}-attempt{attempt}"
     econf = EpisodeConfig(seed=seed, fault=cfg.fault, max_steps=cfg.max_steps, token_budget=cfg.token_budget,
                           keep_world=cfg.keep_worlds, history_minutes=cfg.history_minutes, out_dir=ep_dir,
-                          live_traffic=cfg.live_traffic)
+                          live_traffic=cfg.live_traffic, prompt_style=cfg.prompt_style)
     res = run_episode(agent, econf).to_dict()
     _, steps, _ = read_trajectory(Path(res["trajectory_path"]))
     res["outcome"] = classify_outcome(res, steps)
@@ -369,7 +370,7 @@ def _render_markdown(s: dict[str, Any]) -> str:
         "",
         f"- generated: {s['generated_at']}  ·  sweep dir: `{s['sweep_dir']}`",
         f"- episodes: **{n}** model results" + (f" (+{s['n_infra_errors']} infra errors, excluded)" if s["n_infra_errors"] else ""),
-        f"- config: max_steps={cfg.get('max_steps')} token_budget={cfg.get('token_budget')} history_minutes={cfg.get('history_minutes')} "
+        f"- config: max_steps={cfg.get('max_steps')} prompt_style={cfg.get('prompt_style', 'full')} token_budget={cfg.get('token_budget')} history_minutes={cfg.get('history_minutes')} "
         f"concurrency={cfg.get('concurrency')} agent_kwargs={json.dumps(cfg.get('agent_kwargs', {}))}",
         "",
         "## Headline",

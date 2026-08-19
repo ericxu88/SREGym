@@ -34,6 +34,7 @@ class EpisodeConfig:
     out_dir: Path | None = None  # where trajectory/result files go
     live_traffic: bool = True
     now: datetime | None = None
+    prompt_style: str = "full"  # see harness.prompts.PROMPT_STYLES
 
 
 @dataclass
@@ -103,7 +104,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     out_dir = Path(config.out_dir) if config.out_dir else Path("runs") / f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-seed{config.seed}-{agent.name}"
     out_dir.mkdir(parents=True, exist_ok=True)
     traj_path = out_dir / "trajectory.jsonl"
-    system_prompt = build_system_prompt(world, config.max_steps)
+    system_prompt = build_system_prompt(world, config.max_steps, style=config.prompt_style)
     task_prompt = build_task_prompt(world, spec.incident)
     (out_dir / "prompt.txt").write_text(system_prompt + "\n\n---\n\n" + task_prompt + "\n")
 
@@ -111,7 +112,8 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     writer.write_meta(
         seed=config.seed, fault=config.fault, world_root=str(world.root), world_base=str(world.base), port=world.port, agent=agent.describe(),
         fault_params=dict(world.extra.get("fault_params", {})),
-        max_steps=config.max_steps, token_budget=config.token_budget, system_prompt=system_prompt, task_prompt=task_prompt,
+        max_steps=config.max_steps, token_budget=config.token_budget, prompt_style=config.prompt_style,
+        system_prompt=system_prompt, task_prompt=task_prompt,
         incident=spec.incident.to_dict(), spec=spec.to_dict(), started_at=util.fmt_iso(datetime.now(timezone.utc)),
     )
     live = LiveWorld(world, traffic_rps=config.traffic_rps, live_traffic=config.live_traffic)

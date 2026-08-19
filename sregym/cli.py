@@ -28,7 +28,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         seed=args.seed, fault=args.fault, max_steps=args.max_steps, token_budget=args.token_budget,
         workdir=Path(args.workdir) if args.workdir else None, keep_world=args.keep_world,
         history_minutes=args.history_minutes, out_dir=Path(args.out) if args.out else None,
-        live_traffic=not args.no_traffic,
+        live_traffic=not args.no_traffic, prompt_style=args.prompt_style,
     )
     result = run_episode(agent, config, verbose=not args.quiet)
     print()
@@ -169,7 +169,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         seeds=parse_seeds(args.seeds), out_dir=Path(args.out), agent=args.agent, agent_kwargs=_agent_kwargs(args),
         fault=args.fault, max_steps=args.max_steps, token_budget=args.token_budget, concurrency=args.concurrency,
         history_minutes=args.history_minutes, live_traffic=not args.no_traffic, retries=args.retries, rerun=args.rerun,
-        keep_worlds=args.keep_worlds,
+        keep_worlds=args.keep_worlds, prompt_style=args.prompt_style,
     )
     summary = run_sweep(cfg)
     if summary.get("n_model_results"):
@@ -225,6 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None, help="output_config.effort (default: API default)")
     r.add_argument("--mode", default="solve", help="scripted agent mode: solve|mask|workaround|noop|sloppy")
     r.add_argument("--max-steps", type=int, default=30)
+    r.add_argument("--prompt-style", choices=["full", "lean"], default="full", help="system prompt variant (lean = no spelled-out resolution norms)")
     r.add_argument("--token-budget", type=int, default=400_000)
     r.add_argument("--history-minutes", type=int, default=180)
     r.add_argument("--workdir", help="parent directory for the generated world (default: system temp)")
@@ -271,6 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
     sw.add_argument("--mode", default="solve", help="scripted agent mode")
     sw.add_argument("--max-steps", type=int, default=30)
+    sw.add_argument("--prompt-style", choices=["full", "lean"], default="full")
     sw.add_argument("--token-budget", type=int, default=400_000)
     sw.add_argument("--concurrency", type=int, default=4, help="episodes in flight at once (each is its own world/port)")
     sw.add_argument("--retries", type=int, default=2, help="retries per seed for infra/API errors")
