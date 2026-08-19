@@ -1,8 +1,8 @@
 """Sandboxed shell: allow-listed, read-mostly commands run inside the world root.
 
 Safety model (MVP, no containers): the command is tokenized with shell semantics,
-every pipeline segment must start with an allow-listed program, shell control
-operators other than ``|`` are rejected, path-like arguments must stay inside the
+every command in a pipeline/sequence must start with an allow-listed program, shell
+control operators other than ``|``, ``;``, ``&&``, ``||`` are rejected, path-like arguments must stay inside the
 host root (the control plane lives outside it, so nothing name-based is needed), and a few programs get
 extra rules (git subcommands, sqlite3 forced read-only, no ``sed -i``, no
 ``find -delete/-exec``, curl only to localhost). The *reconstructed* command is
@@ -36,13 +36,16 @@ GIT_DENIED_ARGS = {"expire", "delete", "--force", "-f", "--hard", "--exec", "--e
 SQLITE_DOT_ALLOWED = {".tables", ".schema", ".indexes", ".indices", ".headers", ".header", ".mode", ".dbinfo", ".width",
                       ".nullvalue", ".timer", ".print", ".show", ".databases", ".fullschema", ".stats", ".help", ".quit", ".exit"}
 FIND_DENIED = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
-CURL_DENIED = {"-o", "-O", "--output", "--remote-name", "-T", "--upload-file", "-K", "--config", "--create-dirs", "-D", "--dump-header"}
-CONTROL_OPERATORS = {";", "&&", "||", "&", ">", ">>", "<", "<<", "<<<", ">|", "&>", "|&", "(", ")"}
+CURL_DENIED = {"-O", "--remote-name", "-T", "--upload-file", "-K", "--config", "--create-dirs", "-D", "--dump-header"}
+SEQUENCE_OPERATORS = {";", "&&", "||"}  # allowed between commands: each command is validated on its own
+CONTROL_OPERATORS = {"&", ">", ">>", "<", "<<", "<<<", ">|", "&>", "|&", "(", ")"}
+NULL_SINK = "/dev/null"
 TIMEOUT_S = 25
 
 
-def _tokenize(command: str) -> list[list[str]]:
-    """Split into pipeline segments of argv lists; reject anything but simple pipelines."""
+def _tokenize(command: str) -> list[tuple[str, list[str]]]:
+    """Split into (operator, argv) items where operator is the token joining this command to the
+    previous one ('' for the first, then '|', ';', '&&' or '||'). Anything else is rejected."""
     lex = shlex.shlex(command, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
     try:
@@ -51,21 +54,22 @@ def _tokenize(command: str) -> list[list[str]]:
         raise ToolError(f"cannot parse command: {e}") from e
     if not tokens:
         raise ToolError("empty command")
-    segments: list[list[str]] = [[]]
+    items: list[tuple[str, list[str]]] = [("", [])]
     for tok in tokens:
-        if tok == "|":
-            if not segments[-1]:
-                raise ToolError("empty pipeline segment")
-            segments.append([])
+        if tok == "|" or tok in SEQUENCE_OPERATORS:
+            if not items[-1][1]:
+                raise ToolError(f"empty command before {tok!r}")
+            items.append((tok, []))
             continue
         if tok in CONTROL_OPERATORS or (len(tok) > 1 and set(tok) <= set(";&|<>()")):
-            raise ToolError(f"shell operator {tok!r} is not allowed (only simple commands and pipes '|'); use edit_file to write files")
+            raise ToolError(f"shell operator {tok!r} is not allowed (commands may be joined with '|', ';', '&&', '||'); "
+                            "use edit_file to write files")
         if "`" in tok or "$(" in tok or "${" in tok:
             raise ToolError("command substitution is not allowed")
-        segments[-1].append(tok)
-    if not segments[-1]:
-        raise ToolError("trailing pipe")
-    return segments
+        items[-1][1].append(tok)
+    if not items[-1][1]:
+        raise ToolError("trailing operator")
+    return items
 
 
 def _check_paths(argv: list[str], ctx: ToolContext) -> None:
@@ -77,6 +81,8 @@ def _check_paths(argv: list[str], ctx: ToolContext) -> None:
         if "=" in tok and not tok.startswith("http"):
             candidates.append(tok.split("=", 1)[1])
         for cand in candidates:
+            if cand == NULL_SINK:
+                continue  # discarding output is always fine
             if cand.startswith(("http://", "https://")):
                 if not re.match(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?(/|$)", cand):
                     raise ToolError("network access is limited to the local service (127.0.0.1)")
@@ -97,7 +103,7 @@ def _check_paths(argv: list[str], ctx: ToolContext) -> None:
                     raise ToolError(f"path {cand!r} is outside the host filesystem you have access to")
 
 
-def _validate_segment(argv: list[str], index: int, ctx: ToolContext) -> list[str]:
+def _validate_segment(argv: list[str], piped_in: bool, ctx: ToolContext) -> list[str]:
     prog = os.path.basename(argv[0])
     if prog not in ALLOWED:
         raise ToolError(f"command {argv[0]!r} is not allowed. Allowed: {', '.join(sorted(ALLOWED))}")
@@ -124,8 +130,8 @@ def _validate_segment(argv: list[str], index: int, ctx: ToolContext) -> list[str
         if sub in ("branch", "tag") and any(a in ("-d", "-D", "--delete") for a in args[i + 1:]):
             raise ToolError(f"git {sub} deletion is not allowed")
     elif prog == "sqlite3":
-        if index != 0:
-            raise ToolError("sqlite3 must be the first command in a pipeline (no stdin scripts)")
+        if piped_in:
+            raise ToolError("sqlite3 cannot read commands from a pipe (no stdin scripts); pass SQL as an argument")
         for a in argv[1:]:
             low = a.strip().lower()
             if low.startswith("."):
@@ -151,9 +157,13 @@ def _validate_segment(argv: list[str], index: int, ctx: ToolContext) -> list[str
             if re.search(r"system\s*\(|getline|>\s*\"|\|\s*\"", a):
                 raise ToolError("awk programs may not run commands or write files")
     elif prog == "curl":
-        for a in argv[1:]:
-            if a in CURL_DENIED or a.startswith("--output"):
+        for j, a in enumerate(argv[1:], start=1):
+            if a in CURL_DENIED:
                 raise ToolError(f"curl {a} is not allowed")
+            if a in ("-o", "--output") and (j + 1 >= len(argv) or argv[j + 1] != NULL_SINK):
+                raise ToolError("curl -o may only write to /dev/null (use -s -o /dev/null -w '%{http_code}' for status codes)")
+            if a.startswith("--output=") and a != f"--output={NULL_SINK}":
+                raise ToolError("curl --output may only write to /dev/null")
     elif prog == "sort":
         for a in argv[1:]:
             if a in ("-o", "--output") or a.startswith("--output="):
@@ -171,8 +181,9 @@ class RunShellTool(Tool):
     description = (
         "Run a read-mostly shell command in the host root (working directory). Allowed: common inspection commands "
         "(cat, grep, ls, find, head, tail, wc, diff, stat, ps, ...), git (log/show/diff/blame/checkout/revert/commit/... "
-        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only. Simple pipelines with '|' are allowed; "
-        "no redirection, ';', '&&', or command substitution. Use edit_file to change files and restart_service to restart."
+        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only. Pipes and "
+"joining commands with ';', '&&', '||' is fine; no redirection or command substitution (curl -o /dev/null is allowed). "
+        "Use edit_file to change files and restart_service to restart."
     )
     input_schema = {
         "type": "object",
@@ -184,8 +195,12 @@ class RunShellTool(Tool):
         command = str(args.get("command", "")).strip()
         if not command:
             raise ToolError("command is required")
-        segments = _tokenize(command)
-        rebuilt = " | ".join(shlex.join(_validate_segment(seg, i, ctx)) for i, seg in enumerate(segments))
+        items = _tokenize(command)
+        parts: list[str] = []
+        for op, argv in items:
+            argv = _validate_segment(argv, piped_in=(op == "|"), ctx=ctx)
+            parts.append((f" {op} " if op else "") + shlex.join(argv))
+        rebuilt = "".join(parts)
         world = ctx.world
         home = world.root / "run" / ".home"
         home.mkdir(parents=True, exist_ok=True)

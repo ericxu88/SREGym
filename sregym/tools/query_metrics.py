@@ -146,14 +146,21 @@ class QueryMetricsTool(Tool):
         colw = max(8, min(28, max((len(g) for g in groups), default=8)))
         lines = [head, "bucket(UTC)      " + " ".join(f"{g[:colw]:>{colw}}" for g in groups)]
         b = start
+        current_bucket = None
         while b < end:
             vals = table.get(b, {})
             cells = []
             for g in groups:
                 v = vals.get(g)
                 cells.append(f"{'-' if v is None else (f'{v:.1f}' if unit or metric in GAUGES else f'{v:.0f}'):>{colw}}")
-            lines.append(f"{b:%m-%d %H:%M}      " + " ".join(cells))
+            marker = ""
+            if b <= now < b + timedelta(minutes=step):
+                marker = "  (in progress)"
+                current_bucket = b
+            lines.append(f"{b:%m-%d %H:%M}      " + " ".join(cells) + marker)
             b += timedelta(minutes=step)
+        if current_bucket is not None:
+            lines.append("('-' = no samples yet; the store is scraped every ~10s, so the in-progress bucket lags a little)")
         if dropped:
             lines.append(f"({len(dropped)} more {group_by} values omitted: {', '.join(dropped[:6])}{'...' if len(dropped) > 6 else ''})")
         return ToolResult("\n".join(lines))

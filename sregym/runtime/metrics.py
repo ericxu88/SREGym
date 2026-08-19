@@ -62,8 +62,8 @@ class MetricsCollector(threading.Thread):
         rows: list[dict] = []
         if status != 200:
             rows.append({"ts": ts, "m": "up", "l": {}, "v": 0})
-            self._prev = {}
-            self._prev_start = None
+            # keep the previous counters: a restart is detected via process_start_time_seconds on the
+            # next successful scrape (all counters count as new), a transient failure just resumes.
         else:
             self.scrapes += 1
             cur = parse_prometheus(text)

@@ -92,7 +92,8 @@ def test_control_plane_is_unreachable_from_the_host_root(ctx):
 
 
 @pytest.mark.parametrize("command", [
-    "rm -rf checkout-service/logs", "cat checkout-service/.env > out.txt", "ls; ls", "ls && ls", "echo `id`", "echo $(id)",
+    "rm -rf checkout-service/logs", "cat checkout-service/.env > out.txt", "ls; rm -rf checkout-service", "ls && python3 -c 1",
+    "true || cat /etc/passwd", "echo `id`", "echo $(id)",
     "cat /etc/hosts", "cat ../../../../etc/hosts", "ls ~", "git -C checkout-service reset --hard HEAD~1",
     "git -C checkout-service push origin main", "git -C checkout-service -c core.hooksPath=run log",
     "sqlite3 checkout-service/data/checkout.db 'DROP TABLE orders'", "sqlite3 checkout-service/data/checkout.db '.shell id'",
@@ -125,6 +126,13 @@ def test_run_shell_allows_investigation_commands(ctx):
     assert r.is_error and "exit code" in r.content
     r = _call(ctx, "run_shell", command=f"cat {world.repo}/README.md | head -2")  # absolute path inside the world is fine
     assert not r.is_error and "checkout-service" in r.content
+    # command sequences: each command validated on its own (what a real operator types)
+    r = _call(ctx, "run_shell", command="cat checkout-service/.env; ls -la checkout-service/data && git -C checkout-service log --oneline -3")
+    assert not r.is_error and "DATABASE_TIMEOUT_SECONDS" in r.content and "checkout.db" in r.content and "ops:" in r.content
+    r = _call(ctx, "run_shell", command=f"curl -s -o /dev/null -w '%{{http_code}}' http://127.0.0.1:{world.port}/health")
+    assert not r.is_error and r.content.strip().endswith("503")
+    r = _call(ctx, "run_shell", command=f"curl -s -o out.txt http://127.0.0.1:{world.port}/health")
+    assert r.is_error and not (world.root / "out.txt").exists()
 
 
 def test_edit_file_requires_unique_match_and_reports_diff(ctx):
