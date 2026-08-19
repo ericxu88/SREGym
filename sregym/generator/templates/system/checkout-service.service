@@ -1,0 +1,18 @@
+[Unit]
+Description=checkout-service (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=app
+Group=app
+WorkingDirectory=__SREGYM_REPO__
+ExecStart=__SREGYM_PYTHON__ -m checkout.serve
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

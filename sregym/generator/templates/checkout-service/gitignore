@@ -1,0 +1,7 @@
+# runtime state lives next to the checkout but is never committed
+data/
+logs/
+run/
+__pycache__/
+*.pyc
+.venv/
