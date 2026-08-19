@@ -17,17 +17,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     from sregym.harness.agents import make_agent
     from sregym.harness.episode import EpisodeConfig, run_episode
 
-    kwargs = {}
     if args.agent == "anthropic":
         from sregym.harness.agents.anthropic_adapter import api_credentials_present
 
         if not api_credentials_present():
             print("warning: no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN and no `ant auth login` profile found; "
                   "the API call will likely fail (use --agent scripted for an offline demo)", file=sys.stderr)
-        kwargs = {"model": args.model, "max_tokens": args.max_tokens, "thinking": args.thinking, "effort": args.effort}
-    else:
-        kwargs = {"mode": args.mode}
-    agent = make_agent(args.agent, **kwargs)
+    agent = make_agent(args.agent, **_agent_kwargs(args))
     config = EpisodeConfig(
         seed=args.seed, fault=args.fault, max_steps=args.max_steps, token_budget=args.token_budget,
         workdir=Path(args.workdir) if args.workdir else None, keep_world=args.keep_world,
@@ -155,6 +151,48 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _agent_kwargs(args: argparse.Namespace) -> dict:
+    if args.agent == "anthropic":
+        return {"model": args.model, "max_tokens": args.max_tokens, "thinking": args.thinking, "effort": args.effort}
+    return {"mode": args.mode}
+
+
+def _cmd_sweep(args: argparse.Namespace) -> int:
+    from sregym.harness.sweep import SweepConfig, parse_seeds, run_sweep
+
+    if args.agent == "anthropic":
+        from sregym.harness.agents.anthropic_adapter import api_credentials_present
+
+        if not api_credentials_present():
+            print("warning: no Anthropic credentials found (ANTHROPIC_API_KEY / ./.env / ant profile)", file=sys.stderr)
+    cfg = SweepConfig(
+        seeds=parse_seeds(args.seeds), out_dir=Path(args.out), agent=args.agent, agent_kwargs=_agent_kwargs(args),
+        fault=args.fault, max_steps=args.max_steps, token_budget=args.token_budget, concurrency=args.concurrency,
+        history_minutes=args.history_minutes, live_traffic=not args.no_traffic, retries=args.retries, rerun=args.rerun,
+        keep_worlds=args.keep_worlds,
+    )
+    summary = run_sweep(cfg)
+    if summary.get("n_model_results"):
+        lo, hi = summary["success_ci95"]
+        print(f"\nsuccess {summary['success']}/{summary['n_model_results']} = {100 * summary['success_rate']:.1f}% "
+              f"(95% CI {100 * lo:.0f}-{100 * hi:.0f}%)  mean reward {summary['mean_reward']:.3f}  "
+              f"cost {('$%.2f' % summary['cost_usd_total']) if summary['cost_usd_total'] is not None else 'n/a'}")
+        print("outcomes: " + ", ".join(f"{k}={v}" for k, v in summary["outcomes"].items() if v))
+    print(f"report: {cfg.out_dir / 'report.md'}")
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    from sregym.harness.sweep import build_report
+
+    summary, md = build_report(Path(args.sweep_dir))
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(md)
+    return 0
+
+
 def _cmd_faults(args: argparse.Namespace) -> int:
     from sregym.faults.base import list_faults
 
@@ -211,6 +249,31 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-traffic", action="store_true")
     g.add_argument("--reveal", action="store_true", help="print the hidden root cause")
     g.set_defaults(func=_cmd_generate)
+
+    sw = sub.add_parser("sweep", help="run many seeds concurrently (resumable) and write a calibration report")
+    sw.add_argument("--seeds", required=True, help="e.g. 1-200 or 1-50,60,70-80")
+    sw.add_argument("--out", required=True, help="sweep directory (results, per-episode trajectories, report.md)")
+    sw.add_argument("--fault", default="env_var_typo")
+    sw.add_argument("--agent", choices=["anthropic", "scripted"], default="anthropic")
+    sw.add_argument("--model", default="claude-opus-5")
+    sw.add_argument("--max-tokens", type=int, default=16000)
+    sw.add_argument("--thinking", choices=["adaptive", "off"], default="adaptive")
+    sw.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
+    sw.add_argument("--mode", default="solve", help="scripted agent mode")
+    sw.add_argument("--max-steps", type=int, default=30)
+    sw.add_argument("--token-budget", type=int, default=400_000)
+    sw.add_argument("--concurrency", type=int, default=4, help="episodes in flight at once (each is its own world/port)")
+    sw.add_argument("--retries", type=int, default=2, help="retries per seed for infra/API errors")
+    sw.add_argument("--history-minutes", type=int, default=180)
+    sw.add_argument("--no-traffic", action="store_true")
+    sw.add_argument("--rerun", action="store_true", help="ignore existing results for these seeds")
+    sw.add_argument("--keep-worlds", action="store_true")
+    sw.set_defaults(func=_cmd_sweep)
+
+    rep = sub.add_parser("report", help="(re)generate the report for a sweep directory")
+    rep.add_argument("sweep_dir")
+    rep.add_argument("--json", action="store_true")
+    rep.set_defaults(func=_cmd_report)
 
     f = sub.add_parser("faults", help="list fault templates")
     f.set_defaults(func=_cmd_faults)

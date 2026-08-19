@@ -51,8 +51,10 @@ class EpisodeResult:
     agent: dict[str, Any] = field(default_factory=dict)
     agent_summary: str = ""
     hidden_root_cause: str = ""
+    fault_params: dict[str, Any] = field(default_factory=dict)  # e.g. target/kind/innocent change (for per-variant reports)
     duration_s: float = 0.0
     error: str | None = None
+    infra_error: str | None = None  # environment problem (service failed to start, API outage): result is not a model outcome
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -108,13 +110,15 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     writer = TrajectoryWriter(traj_path)
     writer.write_meta(
         seed=config.seed, fault=config.fault, world_root=str(world.root), world_base=str(world.base), port=world.port, agent=agent.describe(),
+        fault_params=dict(world.extra.get("fault_params", {})),
         max_steps=config.max_steps, token_budget=config.token_budget, system_prompt=system_prompt, task_prompt=task_prompt,
         incident=spec.incident.to_dict(), started_at=util.fmt_iso(datetime.now(timezone.utc)),
     )
     live = LiveWorld(world, traffic_rps=config.traffic_rps, live_traffic=config.live_traffic)
     ctx = ToolContext(world, live.services)
     steps: list[Step] = []
-    usage_total = {"input_tokens": 0, "output_tokens": 0}
+    usage_total = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    infra_error: str | None = None
     stop_reason = "unknown"
     error: str | None = None
     agent_summary = ""
@@ -122,7 +126,10 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         print(f"[sregym] world at {world.base} (host root {world.root}, port {world.port}); fault={config.fault} seed={config.seed}")
         print(f"[sregym] hidden root cause: {spec.incident.root_cause_summary}")
     try:
-        live.start()
+        start_msg = live.start()
+        if "listening" not in start_msg:
+            infra_error = f"service did not start: {start_msg}"
+            raise RuntimeError(infra_error)
         agent.start(system_prompt, task_prompt, registry.specs())
         observation = task_prompt
         step_no = 0
@@ -177,8 +184,10 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         writer.close()
         raise
     except Exception as e:  # noqa: BLE001 - record and still verify
-        stop_reason = "agent_error"
+        stop_reason = "infra_error" if infra_error else "agent_error"
         error = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+        if not infra_error and _looks_like_infra_error(e):
+            infra_error = f"{type(e).__name__}: {str(e)[:300]}"
         if verbose:
             print(f"[sregym] agent error: {error}")
     # ------------------------------------------------------------------ verify against the live world
@@ -193,11 +202,13 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         seed=config.seed, fault=config.fault, reward=verification.reward, success=verification.success,
         verification=verification.to_dict(), stop_reason=stop_reason, steps=len(steps), usage=usage_total,
         trajectory_path=str(traj_path), world_root=str(world.base), agent=agent.describe(), agent_summary=agent_summary,
-        hidden_root_cause=spec.incident.root_cause_summary, duration_s=round(time.time() - started, 2), error=error,
+        hidden_root_cause=spec.incident.root_cause_summary, fault_params=dict(world.extra.get("fault_params", {})),
+        duration_s=round(time.time() - started, 2), error=error, infra_error=infra_error,
     )
     writer.write_end(stop_reason=stop_reason, reward=verification.reward, success=verification.success,
                      verification=verification.to_dict(), usage=usage_total, steps=len(steps), agent_summary=agent_summary,
-                     hidden_root_cause=spec.incident.root_cause_summary, error=error,
+                     hidden_root_cause=spec.incident.root_cause_summary, error=error, infra_error=infra_error,
+                     fault_params=dict(world.extra.get("fault_params", {})),
                      ended_at=util.fmt_iso(datetime.now(timezone.utc)))
     writer.close()
     util.write_json(out_dir / "result.json", result.to_dict())
@@ -206,6 +217,15 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     if not config.keep_world:
         world.destroy()
     return result
+
+
+def _looks_like_infra_error(exc: BaseException) -> bool:
+    """API/network failures that say nothing about the model's ability (retryable at the sweep level)."""
+    name = type(exc).__name__
+    if name in ("RateLimitError", "APIConnectionError", "APITimeoutError", "InternalServerError", "OverloadedError",
+                "APIStatusError", "ServiceUnavailableError", "AuthenticationError", "PermissionDeniedError"):
+        return True
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
 
 
 def _short_args(args: dict[str, Any]) -> str:

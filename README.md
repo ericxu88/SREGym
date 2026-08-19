@@ -37,6 +37,10 @@ sregym run --seed 42 --agent anthropic --model claude-opus-5 --max-steps 30
 # replay any trajectory offline
 sregym replay runs/<timestamp>-seed42-anthropic/trajectory.jsonl
 
+# calibration sweep: many seeds, concurrent, resumable; writes report.md with success rate, failure taxonomy, cost
+sregym sweep --seeds 1-200 --agent anthropic --model claude-sonnet-5 --concurrency 4 --out sweeps/sonnet5-v1
+sregym report sweeps/sonnet5-v1
+
 # generate a world and keep it running for manual poking (Ctrl-C to stop)
 sregym generate --seed 7 --serve --reveal
 
@@ -257,6 +261,23 @@ if the account rejects the beta). `--model claude-opus-5` is the default; `--eff
 
 ---
 
+## Calibration sweeps
+
+`sregym sweep` runs many seeds through the same agent config, `--concurrency N` at a time
+(each episode is its own temp world/port/agent instance), and is **resumable**: per-seed
+results land in `<out>/results/seed-N.json` as they finish, and re-running the same
+command skips completed seeds. API/infra failures (service didn't start, rate limits or
+outages after the SDK's own retries) are retried with backoff and recorded as
+`infra_error` — never as model failures. `report.md` / `summary.json` contain:
+
+- success rate with a Wilson 95% CI, mean reward, reward histogram
+- **failure taxonomy** (deterministic, from the verifier + trajectory): `success`,
+  `collateral_damage`, `workaround` (service restored without fixing the config),
+  `fixed_not_restarted`, `wrong_fix` (edited the config, still broken), `masked`
+  (declared resolved without fixing), `gave_up`, `never_found`, `infra_error`
+- breakdown by fault variant (env var × typo kind, innocent co-change), steps/tokens/
+  duration/cost per episode, and a triage table of failed seeds with the hidden root cause
+
 ## CLI
 
 ```
@@ -266,6 +287,8 @@ sregym run       --seed N [--fault env_var_typo] [--agent anthropic|scripted] [-
 sregym verify    --world DIR [--trajectory FILE] [--start-service] [--json]
 sregym replay    FILE [--step N] [--full] [--prompt] [--width N]
 sregym generate  --seed N [--fault ...] [--workdir DIR] [--serve] [--reveal] [--history-minutes N] [--no-traffic]
+sregym sweep     --seeds 1-200 --out DIR [--agent ...] [--model ID] [--concurrency 4] [--retries 2] [--rerun] [--keep-worlds] ...
+sregym report    DIR [--json]
 sregym faults
 ```
 
@@ -283,7 +306,7 @@ sregym/
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector)
   verifier/    verify.py (check interpreters, reward)
-  harness/     episode.py · trajectory.py · prompts.py · agents/{base,anthropic_adapter,scripted}.py
+  harness/     episode.py · trajectory.py · prompts.py · sweep.py (calibration runner + report) · agents/{base,anthropic_adapter,scripted}.py
   scenario.py  (world -> fault -> history -> manifest) · cli.py
 tests/         world · fault · tools (pagination, sandbox) · verifier (unfixed / fixed / masked / collateral) · episode · adapter
 ```
