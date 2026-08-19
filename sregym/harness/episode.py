@@ -96,7 +96,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     registry = registry or default_registry()
     root = None
     if config.workdir:
-        root = Path(config.workdir) / f"world-seed{config.seed}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}"
+        root = Path(config.workdir) / f"world-seed{config.seed}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S%f}"
     world, spec = prepare_world(config.seed, config.fault, root=root, now=config.now, history_minutes=config.history_minutes)
     out_dir = Path(config.out_dir) if config.out_dir else Path("runs") / f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-seed{config.seed}-{agent.name}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +107,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
 
     writer = TrajectoryWriter(traj_path)
     writer.write_meta(
-        seed=config.seed, fault=config.fault, world_root=str(world.root), port=world.port, agent=agent.describe(),
+        seed=config.seed, fault=config.fault, world_root=str(world.root), world_base=str(world.base), port=world.port, agent=agent.describe(),
         max_steps=config.max_steps, token_budget=config.token_budget, system_prompt=system_prompt, task_prompt=task_prompt,
         incident=spec.incident.to_dict(), started_at=util.fmt_iso(datetime.now(timezone.utc)),
     )
@@ -119,7 +119,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     error: str | None = None
     agent_summary = ""
     if verbose:
-        print(f"[sregym] world at {world.root} (port {world.port}); fault={config.fault} seed={config.seed}")
+        print(f"[sregym] world at {world.base} (host root {world.root}, port {world.port}); fault={config.fault} seed={config.seed}")
         print(f"[sregym] hidden root cause: {spec.incident.root_cause_summary}")
     try:
         live.start()
@@ -192,7 +192,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     result = EpisodeResult(
         seed=config.seed, fault=config.fault, reward=verification.reward, success=verification.success,
         verification=verification.to_dict(), stop_reason=stop_reason, steps=len(steps), usage=usage_total,
-        trajectory_path=str(traj_path), world_root=str(world.root), agent=agent.describe(), agent_summary=agent_summary,
+        trajectory_path=str(traj_path), world_root=str(world.base), agent=agent.describe(), agent_summary=agent_summary,
         hidden_root_cause=spec.incident.root_cause_summary, duration_s=round(time.time() - started, 2), error=error,
     )
     writer.write_end(stop_reason=stop_reason, reward=verification.reward, success=verification.success,

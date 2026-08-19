@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sregym import util
-from sregym.generator.world import CONTROL_DIR, World
+from sregym.generator.world import World
 
 if TYPE_CHECKING:  # pragma: no cover
     from sregym.runtime.services import ServiceManager
@@ -51,7 +51,7 @@ class Tool:
 
 
 def resolve_path(ctx: ToolContext, path: str, must_exist: bool = True) -> Path:
-    """Resolve an agent-supplied path inside the world root; deny the control dir."""
+    """Resolve an agent-supplied path inside the host root (the control plane lives outside it)."""
     if not isinstance(path, str) or not path.strip():
         raise ToolError("path is required")
     p = Path(path.strip())
@@ -60,8 +60,6 @@ def resolve_path(ctx: ToolContext, path: str, must_exist: bool = True) -> Path:
     full = (p if p.is_absolute() else ctx.world.root / p).resolve()
     if not util.is_within(full, ctx.world.root):
         raise ToolError(f"path {path!r} is outside the host filesystem you have access to ({ctx.world.root})")
-    if CONTROL_DIR in full.relative_to(ctx.world.root.resolve()).parts:
-        raise ToolError(f"path {path!r} does not exist")
     if must_exist and not full.exists():
         raise ToolError(f"no such file or directory: {path}")
     return full

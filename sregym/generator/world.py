@@ -1,21 +1,25 @@
 """World generation: seed -> a small, complete production stack on local disk.
 
-Layout of a world root (acts as the host's filesystem):
+Layout of a world (``base`` directory):
 
-    <root>/
-      checkout-service/           git repo of the app; the service's working directory
-        .env                      production config (tracked in git, shipped by "deploy-bot")
-        checkout/*.py             FastAPI app
-        migrations/*.sql, scripts/expire_carts.py, README.md, requirements.txt
-        data/checkout.db, data/ledger.db      (gitignored)
-        logs/app.log, logs/deploy.log, logs/cron.log
-        run/checkout-service.pid
-      etc/nginx/sites-enabled/checkout-service.conf
-      etc/systemd/system/checkout-service.service
-      etc/cron.d/checkout-service
-      var/log/nginx/access.log, error.log
-      metrics/series.jsonl        metrics store read by the query_metrics tool
-      .sregym/                    control plane (world.json, manifest.json, spec.json) - hidden from the agent
+    <base>/
+      .sregym/                    control plane (world.json, manifest.json, spec.json).
+                                  A SIBLING of the host root, so the agent's tools -- which are
+                                  confined to <base>/host -- cannot reach it even with globs or
+                                  recursive greps.
+      host/                       the "host filesystem" the agent operates on (World.root)
+        checkout-service/         git repo of the app; the service's working directory
+          .env                    production config (tracked in git, shipped by "deploy-bot")
+          checkout/*.py           FastAPI app
+          migrations/*.sql, scripts/expire_carts.py, README.md, requirements.txt
+          data/checkout.db, data/ledger.db    (gitignored)
+          logs/app.log, logs/deploy.log, logs/cron.log
+          run/checkout-service.pid
+        etc/nginx/sites-enabled/checkout-service.conf
+        etc/systemd/system/checkout-service.service
+        etc/cron.d/checkout-service
+        var/log/nginx/access.log, error.log
+        metrics/series.jsonl      metrics store read by the query_metrics tool
 """
 from __future__ import annotations
 
@@ -35,12 +39,13 @@ from sregym.generator import app_source
 from sregym.generator.data import BusinessData, create_databases, db_table_snapshot, generate_business_data
 
 SERVICE_NAME = "checkout-service"
-CONTROL_DIR = ".sregym"
+CONTROL_DIR = ".sregym"  # lives in <base>/, next to (not inside) the agent-visible host root
+HOST_DIR = "host"
 CORE_DB = "data/checkout.db"
 LEDGER_DB = "data/ledger.db"
 
 # directories never hashed into the file manifest / state hash
-MANIFEST_EXCLUDE_DIRS = {CONTROL_DIR, ".git", "__pycache__", "logs", "var", "metrics", "run", "data"}
+MANIFEST_EXCLUDE_DIRS = {".git", "__pycache__", "logs", "var", "metrics", "run", "data"}
 
 _GIT_ENV_BASE = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -53,7 +58,7 @@ _GIT_ENV_BASE = {
 @dataclass
 class World:
     seed: int
-    root: Path
+    base: Path  # <base>/host is the agent-visible root, <base>/.sregym the control plane
     now: datetime  # generation time (UTC); "the present" of the incident
     history_start: datetime
     port: int
@@ -72,12 +77,17 @@ class World:
 
     # ------------------------------------------------------------------ paths
     @property
+    def root(self) -> Path:
+        """The host filesystem the agent operates on. Everything agent-reachable is under here."""
+        return self.base / HOST_DIR
+
+    @property
     def repo(self) -> Path:
         return self.root / SERVICE_NAME
 
     @property
     def control_dir(self) -> Path:
-        return self.root / CONTROL_DIR
+        return self.base / CONTROL_DIR
 
     @property
     def env_file(self) -> Path:
@@ -118,14 +128,19 @@ class World:
     @classmethod
     def build(cls, seed: int, root: Path | None = None, now: datetime | None = None,
               history_minutes: int = 180) -> "World":
-        """Create the healthy stack (no fault, no historical logs yet)."""
+        """Create the healthy stack (no fault, no historical logs yet).
+
+        ``root`` is the world's *base* directory (default: a fresh temp dir); the agent-visible
+        host root is ``<root>/host`` and the control plane ``<root>/.sregym``.
+        """
         now = (now or util.utcnow()).astimezone(timezone.utc).replace(microsecond=0)
         if root is None:
             root = Path(tempfile.mkdtemp(prefix=f"sregym-{seed}-"))
-        root = Path(root).resolve()
-        if root.exists() and any(root.iterdir()):
-            raise FileExistsError(f"world root {root} is not empty; pick a fresh directory")
-        root.mkdir(parents=True, exist_ok=True)
+        base = Path(root).resolve()
+        if base.exists() and any(base.iterdir()):
+            raise FileExistsError(f"world directory {base} is not empty; pick a fresh directory")
+        base.mkdir(parents=True, exist_ok=True)
+        (base / HOST_DIR).mkdir()
         rng = random.Random(seed ^ 0xA5A5)
         history_start = now - timedelta(minutes=history_minutes)
         data = generate_business_data(seed, now=now, history_end=history_start)
@@ -149,7 +164,7 @@ class World:
             "SESSION_SECRET": "%032x" % rng.getrandbits(128),
         }
         world = cls(
-            seed=seed, root=root, now=now, history_start=history_start, port=port,
+            seed=seed, base=base, now=now, history_start=history_start, port=port,
             company=data.company, domain=data.domain, team=data.team, base_env=base_env,
             python=sys.executable, data=data,
             sample_user_ids=sorted(rng.sample(data.user_ids, k=min(60, len(data.user_ids)))),
@@ -224,7 +239,7 @@ class World:
     # ------------------------------------------------------------------ persistence
     def to_dict(self) -> dict[str, Any]:
         return {
-            "seed": self.seed, "root": str(self.root), "now": util.fmt_iso(self.now),
+            "seed": self.seed, "base": str(self.base), "root": str(self.root), "now": util.fmt_iso(self.now),
             "history_start": util.fmt_iso(self.history_start), "port": self.port,
             "company": self.company, "domain": self.domain, "team": self.team, "base_env": self.base_env,
             "python": self.python, "commits": self.commits, "sample_user_ids": self.sample_user_ids,
@@ -235,18 +250,22 @@ class World:
         util.write_json(self.control_dir / "world.json", self.to_dict())
 
     @classmethod
-    def load(cls, root: Path) -> "World":
-        root = Path(root).resolve()
-        d = util.read_json(root / CONTROL_DIR / "world.json")
+    def load(cls, path: Path) -> "World":
+        """Load from the base directory (or, for convenience, from the host root inside it)."""
+        path = Path(path).resolve()
+        base = path if (path / CONTROL_DIR).is_dir() else path.parent
+        if not (base / CONTROL_DIR / "world.json").exists():
+            raise FileNotFoundError(f"{path} is not a SREGym world (no {CONTROL_DIR}/world.json)")
+        d = util.read_json(base / CONTROL_DIR / "world.json")
         return cls(
-            seed=d["seed"], root=root, now=util.parse_iso(d["now"]), history_start=util.parse_iso(d["history_start"]),
+            seed=d["seed"], base=base, now=util.parse_iso(d["now"]), history_start=util.parse_iso(d["history_start"]),
             port=d["port"], company=d["company"], domain=d["domain"], team=d["team"], base_env=d["base_env"],
             python=d["python"], commits=d["commits"], sample_user_ids=d["sample_user_ids"], skus=d["skus"],
             max_order_id=d["max_order_id"], fault=d.get("fault"), extra=d.get("extra", {}),
         )
 
     def destroy(self) -> None:
-        shutil.rmtree(self.root, ignore_errors=True)
+        shutil.rmtree(self.base, ignore_errors=True)
 
     # ------------------------------------------------------------------ manifest / state
     def file_hashes(self) -> dict[str, str]:

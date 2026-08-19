@@ -129,7 +129,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
     root = Path(args.workdir) / f"world-seed{args.seed}-{time.strftime('%Y%m%d-%H%M%S')}" if args.workdir else None
     world, spec = prepare_world(args.seed, args.fault, root=root, history_minutes=args.history_minutes)
-    print(f"world:     {world.root}")
+    print(f"world:     {world.base}   (control plane: {world.control_dir})")
+    print(f"host root: {world.root}")
     print(f"repo:      {world.repo}")
     print(f"service:   {world.base_url}  (not started{' -- use --serve' if not args.serve else ''})")
     print(f"company:   {world.company} ({world.domain})")
@@ -185,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=_cmd_run)
 
     v = sub.add_parser("verify", help="re-run the deterministic verifier against an existing world directory")
-    v.add_argument("--world", required=True, help="world root directory (contains .sregym/)")
+    v.add_argument("--world", required=True, help="world directory (contains .sregym/ and host/)")
     v.add_argument("--trajectory", help="trajectory.jsonl for forbidden-action checks")
     v.add_argument("--start-service", action="store_true", help="start the service from the current on-disk state first")
     v.add_argument("--json", action="store_true")

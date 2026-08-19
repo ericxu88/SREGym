@@ -57,13 +57,38 @@ def test_read_logs_tail_and_time_filters(ctx):
 
 
 def test_path_sandbox(ctx):
-    for name, args in [("read_logs", {"path": ".sregym/spec.json"}), ("read_file", {"path": ".sregym/manifest.json"}),
+    ctrl = ctx.world.control_dir
+    for name, args in [("read_logs", {"path": "../.sregym/spec.json"}), ("read_file", {"path": str(ctrl / "manifest.json")}),
                        ("read_file", {"path": "/etc/passwd"}), ("read_file", {"path": "../../.."}),
-                       ("edit_file", {"path": ".sregym/x", "old_string": "", "new_string": "y"}),
+                       ("edit_file", {"path": "../.sregym/x", "old_string": "", "new_string": "y"}),
                        ("edit_file", {"path": "checkout-service/logs/app.log", "old_string": "INFO", "new_string": "x"})]:
         r = _call(ctx, name, **args)
         assert r.is_error, (name, args, r.content)
-    assert not (ctx.world.control_dir / "x").exists()
+    assert not (ctrl / "x").exists()
+
+
+def test_control_plane_is_unreachable_from_the_host_root(ctx):
+    """The answer key (.sregym/spec.json, world.json) must not be discoverable or readable via any tool --
+    including recursive greps/finds from the host root, globs, .. traversal or absolute paths."""
+    from sregym import util
+
+    world = ctx.world
+    ctrl = world.control_dir
+    assert (ctrl / "spec.json").exists() and not util.is_within(ctrl, world.root)
+    for cmd in ["ls -a", "find . -name '*.json'", "grep -rl root_cause_summary .", "grep -rl base_env .",
+                "grep -r DATABASE_URL . | grep -v checkout-service", "cat .sregy*/spec.json", "cat .*/spec.json"]:
+        r = _call(ctx, "run_shell", command=cmd)
+        output = "\n".join(r.content.splitlines()[1:])  # drop the echoed `$ command` line
+        for needle in (".sregym", "root_cause", "base_env", "hidden"):
+            assert needle not in output, (cmd, r.content)
+    for cmd in ["cat ../.sregym/spec.json", f"cat {ctrl}/spec.json", "grep -r root_cause_summary ..", f"ls {world.base}",
+                f"grep -r root_cause_summary {world.base}"]:
+        r = _call(ctx, "run_shell", command=cmd)
+        assert r.is_error and "outside the host filesystem" in r.content, (cmd, r.content)
+    for name, args in [("read_file", {"path": "../.sregym/spec.json"}), ("read_file", {"path": str(ctrl / "world.json")}),
+                       ("read_logs", {"path": str(ctrl / "spec.json")}), ("read_file", {"path": str(world.base)})]:
+        r = _call(ctx, name, **args)
+        assert r.is_error and "outside the host filesystem" in r.content, (name, args, r.content)
 
 
 @pytest.mark.parametrize("command", [
@@ -73,7 +98,7 @@ def test_path_sandbox(ctx):
     "sqlite3 checkout-service/data/checkout.db 'DROP TABLE orders'", "sqlite3 checkout-service/data/checkout.db '.shell id'",
     "echo .quit | sqlite3 checkout-service/data/checkout.db", "sed -i 's/a/b/' checkout-service/.env",
     "find checkout-service -name '*.log' -delete", r"find checkout-service -exec rm {} \;", "curl https://example.com",
-    "curl -o /dev/null http://127.0.0.1:1/", "python3 -c 'print(1)'", "cat .sregym/world.json", "awk 'BEGIN{system(\"id\")}'",
+    "curl -o /dev/null http://127.0.0.1:1/", "python3 -c 'print(1)'", "cat ../.sregym/world.json", "awk 'BEGIN{system(\"id\")}'",
     "kill -9 1", "tee checkout-service/.env",
 ])
 def test_run_shell_blocks_dangerous_commands(ctx, command):

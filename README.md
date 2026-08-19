@@ -137,18 +137,21 @@ Tool results are text, capped per tool (a full 50-line log page always fits).
 ## What gets generated
 
 ```
-<world root>/                         # acts as the host filesystem (temp dir, deleted after the episode unless --keep-world)
-  checkout-service/                   # git repo (9 commits over ~90 days), the service's working directory
-    .env                              # production config, tracked in git, "shipped by deploy-bot"
-    checkout/{config,db,main,serve,telemetry}.py   # FastAPI app: /health /users /orders POST /checkout /metrics
-    migrations/*.sql  scripts/expire_carts.py  README.md  requirements.txt
-    data/checkout.db  data/ledger.db  # SQLite (users/products/orders/carts; payments ledger)
-    logs/app.log                      # 3h of access + application log, UTC, incl. tracebacks; the live app appends to it
-    logs/deploy.log  logs/cron.log
-  etc/nginx/sites-enabled/checkout-service.conf, etc/systemd/system/*.service, etc/cron.d/checkout-service
-  var/log/nginx/access.log, error.log
-  metrics/series.jsonl                # metrics store (historical + live scrapes)
-  .sregym/                            # control plane (world.json, spec.json, manifest.json) — invisible to the agent
+<world>/                              # temp dir, deleted after the episode unless --keep-world
+  .sregym/                            # control plane: world.json, spec.json (incl. the answer), manifest.json.
+                                      # A sibling of host/, so tools confined to host/ cannot reach it — not even
+                                      # with `grep -r`, globs, `..` or absolute paths (tested).
+  host/                               # the "host filesystem" the agent operates on; all tool paths are confined here
+    checkout-service/                 # git repo (9 commits over ~90 days), the service's working directory
+      .env                            # production config, tracked in git, "shipped by deploy-bot"
+      checkout/{config,db,main,serve,telemetry}.py   # FastAPI app: /health /users /orders POST /checkout /metrics
+      migrations/*.sql  scripts/expire_carts.py  README.md  requirements.txt
+      data/checkout.db  data/ledger.db   # SQLite (users/products/orders/carts; payments ledger)
+      logs/app.log                    # 3h of access + application log, UTC, incl. tracebacks; the live app appends to it
+      logs/deploy.log  logs/cron.log
+    etc/nginx/sites-enabled/checkout-service.conf, etc/systemd/system/*.service, etc/cron.d/checkout-service
+    var/log/nginx/access.log, error.log
+    metrics/series.jsonl              # metrics store (historical + live scrapes)
 ```
 
 * **World** (`sregym/generator/world.py`): Faker-seeded business data (company, ~300–700
@@ -287,8 +290,8 @@ tests/         world · fault · tools (pagination, sandbox) · verifier (unfixe
 
 ## Design notes & limitations (MVP)
 
-* No containers: the "sandbox" is an allow-list + path confinement + read-only sqlite,
-  and the verifier's collateral checks are the real safety net. Do not point this at a
+* No containers: the "sandbox" is an allow-list + path confinement to `host/` + read-only sqlite,
+  and the verifier's collateral checks are the real safety net. The answer key lives outside `host/`. Do not point this at a
   host you care about with an untrusted agent.
 * nginx and cron are configuration + logs only (they are not running); the agent hits
   the uvicorn upstream directly. `deploy-bot` is fictional; the harness's service manager

@@ -3,7 +3,7 @@
 Safety model (MVP, no containers): the command is tokenized with shell semantics,
 every pipeline segment must start with an allow-listed program, shell control
 operators other than ``|`` are rejected, path-like arguments must stay inside the
-world root (and never touch the hidden control directory), and a few programs get
+host root (the control plane lives outside it, so nothing name-based is needed), and a few programs get
 extra rules (git subcommands, sqlite3 forced read-only, no ``sed -i``, no
 ``find -delete/-exec``, curl only to localhost). The *reconstructed* command is
 executed with ``/bin/sh -c`` in a clean environment. Destructive actions that slip
@@ -18,7 +18,6 @@ import subprocess
 from typing import Any
 
 from sregym import util
-from sregym.generator.world import CONTROL_DIR
 from sregym.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 ALLOWED = {
@@ -74,8 +73,6 @@ def _check_paths(argv: list[str], ctx: ToolContext) -> None:
     for tok in argv:
         if tok.startswith("~"):
             raise ToolError("home-relative paths are not allowed")
-        if CONTROL_DIR in tok:
-            raise ToolError(f"no such file or directory: {tok}")
         candidates = [tok]
         if "=" in tok and not tok.startswith("http"):
             candidates.append(tok.split("=", 1)[1])
