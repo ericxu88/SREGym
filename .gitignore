@@ -7,3 +7,6 @@ runs/
 .ruff_cache/
 dist/
 build/
+# local secrets (e.g. ANTHROPIC_API_KEY); loaded by the sregym CLI, never committed
+.env
+.env.*

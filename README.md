@@ -31,7 +31,7 @@ source .venv/bin/activate
 # offline demo: deterministic reference solver, no API key needed (~4 s)
 sregym run --seed 42 --agent scripted
 
-# a real model (uses ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile)
+# a real model: put ANTHROPIC_API_KEY=... in a git-ignored ./.env (auto-loaded), export it, or use an `ant auth login` profile
 sregym run --seed 42 --agent anthropic --model claude-opus-5 --max-steps 30
 
 # replay any trajectory offline

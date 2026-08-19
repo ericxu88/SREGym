@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import textwrap
@@ -216,7 +217,24 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _load_dotenv() -> None:
+    """Load KEY=VALUE pairs from ./.env into the environment (existing variables win).
+
+    Lets you keep ANTHROPIC_API_KEY in a git-ignored .env next to the project instead of
+    exporting it in every shell. Nothing is ever printed.
+    """
+    path = Path(".env")
+    if not path.is_file():
+        return
+    try:
+        for key, value in util.parse_env_file(path.read_text()).items():
+            os.environ.setdefault(key, value)
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
