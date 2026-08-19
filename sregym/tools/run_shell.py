@@ -29,6 +29,7 @@ ALLOWED = {
     "paste", "expand", "fold", "od", "xxd", "hexdump", "seq", "tree", "less", "more", "id", "lsof", "netstat", "ss",
     "python", "python3",  # only `python <repo>/scripts/<name>.py ...` for unmodified, generation-time scripts (see below)
     "rm",  # only files the agent created itself (not in the generation-time manifest, not under data/logs/...)
+    "chmod",  # host-root-confined; permissions are real operational state here (see db_file_permissions fault)
 }
 PROTECTED_DIRS = {".git", "data", "logs", "var", "run", "metrics", "__pycache__"}  # never rm-able
 GIT_ALLOWED = {

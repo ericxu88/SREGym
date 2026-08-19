@@ -79,6 +79,55 @@ class ScriptedAgent(AgentAdapter):
             return bad, good
         return None
 
+    # ------------------------------------------------------------------ db file permissions script
+    def _script_permissions(self) -> Generator[ToolCall, ToolResult | None, None]:
+        base = f"http://127.0.0.1:{self.port}"
+        self.notes.append("Writes fail with 'readonly database' while reads work: checking file modes and the host agent log.")
+        yield self._call("read_logs", path="var/log/fleetd.log", tail=True, limit=8)
+        listing = yield self._call("run_shell", command=f"ls -la {REPO}/data && ls -ld {REPO}/data")
+        if self.mode == "mask":
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Restarted.", root_cause="transient")
+            return
+        target = None
+        for line in (listing.content if listing else "").splitlines():
+            cols = line.split()
+            if not cols or not cols[0].startswith(("d", "-")):
+                continue
+            mode, name = cols[0], cols[-1]
+            if "w" not in mode[1:4]:
+                if mode.startswith("d"):
+                    target = ("dir", f"{REPO}/data" if name.endswith("/data") or name == "." else f"{REPO}/data")
+                elif name.endswith(".db"):
+                    target = ("file", f"{REPO}/data/{name}")
+                if target:
+                    break
+        if target is None:
+            yield self._call("resolve_incident", summary="Could not find the read-only path.", root_cause="unknown")
+            return
+        kind, path = target
+        if self.mode == "workaround":
+            self.notes.append("Repointing the app at a fresh database path it can write to.")
+            yield self._call("edit_file", path=f"{REPO}/.env", old_string="DATABASE_URL=sqlite:///data/checkout.db",
+                             new_string="DATABASE_URL=sqlite:///run/checkout-rw.db")
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Moved the db path.", root_cause="disk perms")
+            return
+        self.notes.append(f"fleetd hardening made {path} read-only; restoring owner write.")
+        yield self._call("run_shell", command=f"chmod {'755' if kind == 'dir' else '644'} {path}")
+        if self.mode == "sloppy":
+            yield self._call("edit_file", path=f"{REPO}/README.md", old_string="# checkout-service", new_string="# checkout-service (fixed)")
+        yield self._call("run_shell", command=f"ls -ld {path}")
+        probe = yield self._call("run_shell", command=f"sqlite3 {REPO}/data/checkout.db 'select sku from products where active=1 limit 1'")
+        sku = probe.content.splitlines()[1].strip() if probe and len(probe.content.splitlines()) > 1 else "X"
+        yield self._call("run_shell", command=f"curl -s -X POST {base}/checkout -H 'Content-Type: application/json' "
+                                              f"-d '{{\"user_id\": 1, \"items\": [{{\"sku\": \"{sku}\"}}]}}'")
+        yield self._call("resolve_incident",
+                         summary=(f"fleetd's permissions baseline made {path} read-only at the incident time; SQLite kept serving reads "
+                                  "but every write failed with 'attempt to write a readonly database'. Restored owner write with chmod; "
+                                  "checkouts confirm again. No restart or code change needed."),
+                         root_cause="hardening policy removed the write bit from the service data path")
+
     # ------------------------------------------------------------------ cron write lock script
     def _script_cron_lock(self) -> Generator[ToolCall, ToolResult | None, None]:
         self.notes.append("'database is locked' in bursts: something is holding the write lock periodically. Checking cron.")
@@ -234,6 +283,9 @@ class ScriptedAgent(AgentAdapter):
             return
         if r and "database is locked" in r.content:
             yield from self._script_cron_lock()
+            return
+        if r and "attempt to write a readonly database" in r.content:
+            yield from self._script_permissions()
             return
         self.notes.append("500s carry 'unable to open database file'. Checking for restarts/config warnings around the onset.")
         yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.serve|checkout\.config|Shutting down", tail=True, limit=15)

@@ -293,6 +293,17 @@ editing the job script or the app is a workaround. Verification uses a **probe w
 in-flight lock, `POST /checkout` must succeed every 5 s for 65 s with no new `database is locked` lines — a
 restart-only "fix" gets caught by the next burst.
 
+**`db_file_permissions`** (rung 3, template #4): the host's config-management agent ("fleetd") applied a
+permissions baseline written for other hosts and stripped the write bit from the service's data path
+(seeded target: `data/` 0555, `data/checkout.db` 0444, or `data/ledger.db` 0444). SQLite silently falls back
+to read-only, so reads and `/health` stay green — but every write fails instantly with
+`sqlite3.OperationalError: attempt to write a readonly database`, and only `POST /checkout` 500s. No deploy,
+no restart, no git change; the trail is `var/log/fleetd.log` (rule name, old → new mode — every world carries
+routine fleetd policy-sync entries so the log's existence is not a tell) and `ls -la`. Fix: `chmod` the write
+bit back (the sandbox allows chmod, confined to the host root; no restart needed). Repointing `.env` at a
+writable path or patching the app is a workaround. Reproduces only when the harness runs unprivileged (root
+ignores file modes; CI runners are non-root).
+
 ### Verifier & reward
 
 Deterministic, no LLM (`sregym/verifier/verify.py`), run against the *live* world at the
@@ -396,7 +407,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning)
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector) · cron.py (cron daemon)

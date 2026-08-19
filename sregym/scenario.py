@@ -16,8 +16,10 @@ def prepare_world(seed: int, fault: str = "env_var_typo", root: Path | None = No
                   history_minutes: int = 180) -> tuple[World, VerificationSpec]:
     """Build the stack, inject the fault, write the evidence trail, freeze the manifest."""
     world = World.build(seed, root=root, now=now, history_minutes=history_minutes)
-    spec = get_fault(fault).inject(world, seed)
+    template = get_fault(fault)
+    spec = template.inject(world, seed)
     generate_history(world, spec.incident)
+    template.finalize(world, spec)
     spec.save(world)
     world.snapshot_manifest()
     world.save()

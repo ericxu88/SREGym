@@ -123,11 +123,13 @@ def _traceback_templates(repo: Path) -> dict[str, list[str]]:
         ]
 
     for handler, needle in (("checkout", 'cur = conn.execute(f"INSERT INTO orders ('),
+                            ("checkout_ledger_sql", 'pcur = ledger.execute('),
                             ("get_order", 'order = _row(conn.execute(f"SELECT {ORDER_COLUMNS} FROM orders WHERE id = ?"'),
                             ("list_orders", "rows = conn.execute("), ("get_user", 'user = _row(conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE id = ?"'),
                             ("list_users", "rows = conn.execute(")):
+        name = "checkout" if handler == "checkout_ledger_sql" else handler
         try:
-            out[f"sql:{handler}"] = build_sql(handler, needle)
+            out[f"sql:{handler}"] = build_sql(name, needle)
         except ValueError:
             pass
     return out
@@ -425,6 +427,7 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     (nginx_dir / "error.log").write_text("".join(line + "\n" for _, line in sim.nginx_error))
     _write_deploy_log(world, incident, rng)
     _write_cron_log(world, incident, rng, start, end, orders_range=(max_order, sim.max_order_id))
+    _write_fleetd_log(world, incident, rng, start, end)
     _write_metrics(world, sim)
     _insert_orders(world, sim)
 
@@ -521,6 +524,26 @@ def _write_cron_log(world: World, incident: IncidentProfile | None, rng: random.
             t += timedelta(seconds=burst["period_s"])
     entries.sort(key=lambda e: e[0])
     (world.log_dir / "cron.log").write_text("".join(l + "\n" for _, l in entries))
+
+
+def _write_fleetd_log(world: World, incident: IncidentProfile | None, rng: random.Random, start: datetime, end: datetime) -> None:
+    """Host configuration-management agent ("fleetd") log: routine policy syncs, plus any events a fault
+    template staged in ``incident.extra['fleetd_events']`` ([(iso_ts, text), ...])."""
+    pid = rng.randint(300, 900)
+    entries: list[tuple[datetime, str]] = []
+    t = start + timedelta(minutes=rng.uniform(2, 20))
+    while t < end:
+        entries.append((t, f"{t:%Y-%m-%d %H:%M:%S} fleetd[{pid}]: policy sync completed: 0 changes "
+                           f"(perms-baseline-v3, pkg-inventory-v9) in {rng.uniform(0.4, 2.2):.1f}s"))
+        t += timedelta(minutes=rng.uniform(17, 43))
+    if incident:
+        for iso, text in incident.extra.get("fleetd_events", []):
+            at = util.parse_iso(iso)
+            entries.append((at, f"{at:%Y-%m-%d %H:%M:%S} fleetd[{pid}]: {text}"))
+    entries.sort(key=lambda e: e[0])
+    path = world.root / "var" / "log" / "fleetd.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(l + "\n" for _, l in entries))
 
 
 def _write_metrics(world: World, sim: _Sim) -> None:

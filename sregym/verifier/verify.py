@@ -266,6 +266,22 @@ class Verifier:
             return False, "modified: " + ", ".join(changed)
         return True, f"{len(files)} files unchanged"
 
+    def check_path_writable(self, path: str, expect_dir: bool = False) -> tuple[bool, str]:
+        """The path exists, is the right kind, and is writable by its owner again (permissions restored)."""
+        import os
+
+        p = self.world.root / path
+        if not p.exists():
+            return False, f"{path} is missing"
+        if expect_dir != p.is_dir():
+            return False, f"{path} is {'not ' if expect_dir else ''}a directory"
+        mode = p.stat().st_mode & 0o777
+        if not os.access(p, os.W_OK) or not mode & 0o200:
+            return False, f"{path} is not writable (mode {mode:03o})"
+        if expect_dir and not os.access(p, os.X_OK):
+            return False, f"{path} is not traversable (mode {mode:03o})"
+        return True, f"{path} writable (mode {mode:03o})"
+
     def check_path_exists(self, path: str) -> tuple[bool, str]:
         p = self.world.root / path
         return (True, f"{path} present") if p.exists() else (False, f"{path} is missing")
