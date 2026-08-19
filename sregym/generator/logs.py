@@ -109,6 +109,27 @@ def _traceback_templates(repo: Path) -> dict[str, list[str]]:
     for handler in ("get_order", "list_orders", "get_user", "list_users", "checkout"):
         out[handler] = build(handler, "with core_db() as conn:", "core_db", l_core, core_src)
     out["checkout_ledger"] = build("checkout", "with ledger_db() as ledger:", "ledger_db", l_ledger, ledger_src)
+
+    # SQL errors raised by a statement inside the handler (e.g. a column the schema does not have yet):
+    # the only app frames are the middleware and the handler's execute line.
+    def build_sql(handler: str, needle: str) -> list[str]:
+        lineno = handler_with(handler, needle)
+        return [
+            "Traceback (most recent call last):",
+            f'  File "checkout/main.py", line {l_call_next}, in observe_requests',
+            "    response = await call_next(request)",
+            f'  File "checkout/main.py", line {lineno}, in {handler}',
+            f"    {main[lineno - 1].strip()}",
+        ]
+
+    for handler, needle in (("checkout", 'cur = conn.execute(f"INSERT INTO orders ('),
+                            ("get_order", 'order = _row(conn.execute(f"SELECT {ORDER_COLUMNS} FROM orders WHERE id = ?"'),
+                            ("list_orders", "rows = conn.execute("), ("get_user", 'user = _row(conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE id = ?"'),
+                            ("list_users", "rows = conn.execute(")):
+        try:
+            out[f"sql:{handler}"] = build_sql(handler, needle)
+        except ValueError:
+            pass
     return out
 
 
@@ -182,6 +203,7 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
     key = f"{method} {template}"
     failing = bool(inc) and ts >= inc.incident_at and key in inc.failing_endpoints
     core_broken = bool(inc) and inc.broken_db == "core"
+    override = (inc.extra.get("endpoint_errors") or {}).get(key) if failing else None  # {"error":..., "tb":...}
     slow = slow_window and template != "/checkout" and rng.random() < 0.4
     latency = tp.latency_ms(rng, template, slow=slow)
     warn = [f"slow database transaction ({latency:.0f}ms) db=core"] if slow else None
@@ -195,8 +217,9 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
         path = "/checkout"
         r = rng.random()
         if failing:
-            status, error = 500, inc.error_message
-            tb_key = "checkout" if core_broken else "checkout_ledger"
+            status = 500
+            error = override["error"] if override else inc.error_message
+            tb_key = override["tb"] if override else ("checkout" if core_broken else "checkout_ledger")
             latency = tp.latency_ms(rng, "/orders")  # fails fast
         elif r < 0.012:
             status = 422
@@ -236,13 +259,13 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
         extra["order"] = order_id
         path = f"/orders/{order_id}"
         if failing:
-            status, error, tb_key = 500, inc.error_message, "get_order"
+            status, error, tb_key = 500, (override["error"] if override else inc.error_message), (override["tb"] if override else "get_order")
     elif template == "/orders":
         user_id = rng.choice(sim.user_ids)
         extra["user"] = user_id
         path = f"/orders?user_id={user_id}" + rng.choice(["", "", "&limit=10", "&status=confirmed", "&limit=50&offset=0"])
         if failing:
-            status, error, tb_key = 500, inc.error_message, "list_orders"
+            status, error, tb_key = 500, (override["error"] if override else inc.error_message), (override["tb"] if override else "list_orders")
     elif template == "/users/{user_id}":
         if rng.random() < 0.02:
             user_id = rng.randint(sim.user_ids[-1] + 1, sim.user_ids[-1] + 5000)
@@ -252,11 +275,11 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
         extra["user"] = user_id
         path = f"/users/{user_id}"
         if failing:
-            status, error, tb_key = 500, inc.error_message, "get_user"
+            status, error, tb_key = 500, (override["error"] if override else inc.error_message), (override["tb"] if override else "get_user")
     else:  # /users
         path = "/users?" + rng.choice(["limit=20", "limit=50", "limit=20&offset=20", "limit=100&offset=100"])
         if failing:
-            status, error, tb_key = 500, inc.error_message, "list_users"
+            status, error, tb_key = 500, (override["error"] if override else inc.error_message), (override["tb"] if override else "list_users")
     _record_request(sim, ts, method, template, path, status, latency, extra, error, tb_key, warn)
 
 
@@ -444,6 +467,8 @@ def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_on
     else:
         t += timedelta(seconds=rng.uniform(4, 12))
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} pip install -r requirements.txt ... up to date")
+        t += timedelta(seconds=rng.uniform(0.5, 1.5))
+        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} db migrations: not run by deploy-bot (manual step, see runbook)")
     if restart == "deferred":
         t += timedelta(seconds=rng.uniform(1, 2))
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} config-only change: service restart deferred (takes effect on next restart)")

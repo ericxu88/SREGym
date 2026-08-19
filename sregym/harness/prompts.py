@@ -41,8 +41,8 @@ _SUPPORT_NOTES = [
     "Customers cannot complete purchases — checkout page errors out. Marketing has a promo email going out at the top of the hour.",
 ]
 _DETAILS = [
-    "Error rate for POST /checkout crossed threshold at {since} UTC and has stayed elevated. Load balancer health checks flapping (upstream marked unhealthy).",
-    "5xx ratio on {svc} above 10% for 5 consecutive minutes (window start {since} UTC). LB reports the upstream as unhealthy.",
+    "Error rate for {endpoint} crossed threshold at {since} UTC and has stayed elevated.{lb}",
+    "5xx ratio on {svc} above 10% for 5 consecutive minutes (window start {since} UTC).{lb}",
     "Alert has been firing since {page} UTC; symptom start ~{since} UTC. No auto-remediation configured for this service.",
 ]
 
@@ -71,7 +71,9 @@ def render_error_rate_page(world: World, incident: IncidentProfile, rng: random.
     incident_no = 4000 + rng.randint(100, 899)
     ticket = 70000 + rng.randint(1000, 8999)
     title = rng.choice(_TITLES).format(svc=SERVICE_NAME, rate=rate)
-    detail = rng.choice(_DETAILS).format(svc=SERVICE_NAME, since=since, page=page)
+    endpoint = incident.failing_endpoints[0] if incident.failing_endpoints else "POST /checkout"
+    lb = " Load balancer health checks flapping (upstream marked unhealthy)." if incident.health_degraded else ""
+    detail = rng.choice(_DETAILS).format(svc=SERVICE_NAME, since=since, page=page, endpoint=endpoint, lb=lb)
     note = rng.choice(_SUPPORT_NOTES).format(since=since)
     ack = incident.page_at.replace(second=0) + (world.now - incident.page_at) * rng.uniform(0.2, 0.5)
     lines = [

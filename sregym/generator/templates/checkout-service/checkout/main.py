@@ -159,6 +159,22 @@ def health() -> JSONResponse:
     return JSONResponse(status_code=200 if healthy else 503, content=body)
 
 
+# column lists are extended by features that ship with a schema migration (see migrations/)
+USER_COLUMNS = "id, email, full_name, country, tier, created_at"
+#[[ marketing_optin
+USER_COLUMNS += ", marketing_opt_in"
+#]] marketing_optin
+ORDER_COLUMNS = "id, user_id, status, total_cents, currency, created_at, updated_at"  # order detail
+ORDER_LIST_COLUMNS = ORDER_COLUMNS  # order listings
+#[[ coupons
+ORDER_COLUMNS += ", coupon_code, discount_cents"
+#]] coupons
+#[[ fulfillment
+ORDER_COLUMNS += ", fulfillment_status"
+ORDER_LIST_COLUMNS += ", fulfillment_status"
+#]] fulfillment
+
+
 # --------------------------------------------------------------------------- users
 def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(r) if r is not None else None
@@ -168,7 +184,7 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
 def list_users(request: Request, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)) -> dict[str, Any]:
     with core_db() as conn:
         rows = conn.execute(
-            "SELECT id, email, full_name, country, tier, created_at FROM users ORDER BY id LIMIT ? OFFSET ?",
+            f"SELECT {USER_COLUMNS} FROM users ORDER BY id LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
         total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -179,7 +195,7 @@ def list_users(request: Request, limit: int = Query(20, ge=1, le=100), offset: i
 def get_user(user_id: int, request: Request) -> dict[str, Any]:
     request.state.log_extra["user"] = user_id
     with core_db() as conn:
-        user = _row(conn.execute("SELECT id, email, full_name, country, tier, created_at FROM users WHERE id = ?", (user_id,)).fetchone())
+        user = _row(conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE id = ?", (user_id,)).fetchone())
         if user is None:
             raise HTTPException(status_code=404, detail="user not found")
         stats = conn.execute(
@@ -212,8 +228,7 @@ def list_orders(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     with core_db() as conn:
         rows = conn.execute(
-            f"SELECT id, user_id, status, total_cents, currency, created_at, updated_at FROM orders {where} "
-            "ORDER BY id DESC LIMIT ? OFFSET ?",
+            f"SELECT {ORDER_LIST_COLUMNS} FROM orders {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
         total = conn.execute(f"SELECT COUNT(*) FROM orders {where}", params).fetchone()[0]
@@ -224,10 +239,7 @@ def list_orders(
 def get_order(order_id: int, request: Request) -> dict[str, Any]:
     request.state.log_extra["order"] = order_id
     with core_db() as conn:
-        order = _row(conn.execute(
-            "SELECT id, user_id, status, total_cents, currency, created_at, updated_at FROM orders WHERE id = ?",
-            (order_id,),
-        ).fetchone())
+        order = _row(conn.execute(f"SELECT {ORDER_COLUMNS} FROM orders WHERE id = ?", (order_id,)).fetchone())
         if order is None:
             raise HTTPException(status_code=404, detail="order not found")
         items = conn.execute(
@@ -251,6 +263,23 @@ class CheckoutRequest(BaseModel):
     items: list[CheckoutItem] = Field(..., min_length=1, max_length=25)
     payment_method: str = Field("card", pattern="^(card|paypal|apple_pay|bank_transfer)$")
     currency: str = Field("USD", min_length=3, max_length=3)
+    #[[ coupons
+    coupon_code: str | None = Field(None, max_length=32)
+    #]] coupons
+
+
+#[[ coupons
+_PROMO_CODES = {"WELCOME10": 10, "SUMMER15": 15, "VIP20": 20}  # percent off (promo pilot, CHK-301)
+
+
+def _coupon_discount(code: str | None, total_cents: int) -> int:
+    if not code:
+        return 0
+    pct = _PROMO_CODES.get(code.strip().upper(), 0)
+    return (total_cents * pct) // 100
+
+
+#]] coupons
 
 
 class _RateLimiter:
@@ -306,10 +335,16 @@ def checkout(payload: CheckoutRequest, request: Request) -> dict[str, Any]:
         if unknown:
             raise HTTPException(status_code=400, detail=f"unknown or inactive sku(s): {', '.join(unknown)}")
         total = sum(products[i.sku]["price_cents"] * i.quantity for i in payload.items)
-        cur = conn.execute(
-            "INSERT INTO orders (user_id, status, total_cents, currency, created_at, updated_at) VALUES (?, 'pending', ?, ?, ?, ?)",
-            (payload.user_id, total, payload.currency.upper(), created_at, created_at),
-        )
+        columns = ["user_id", "status", "total_cents", "currency", "created_at", "updated_at"]
+        values: list[Any] = [payload.user_id, "pending", total, payload.currency.upper(), created_at, created_at]
+        #[[ coupons
+        discount = _coupon_discount(payload.coupon_code, total)
+        total -= discount
+        values[2] = total
+        columns += ["coupon_code", "discount_cents"]
+        values += [payload.coupon_code, discount]
+        #]] coupons
+        cur = conn.execute(f"INSERT INTO orders ({', '.join(columns)}) VALUES ({', '.join('?' for _ in values)})", values)
         order_id = cur.lastrowid
         conn.executemany(
             "INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents) VALUES (?, ?, ?, ?)",

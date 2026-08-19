@@ -257,6 +257,18 @@ restart, **and** backfill the diverted payments with the repo's `scripts/reconci
 hash-pinned repo scripts** (`python checkout-service/scripts/<name>.py …`, executed from the repo root);
 any other use of `python`, or a script the agent has modified, is refused.
 
+**`unapplied_migration`** (rung 3, template #2): the latest release ships a feature whose SQL needs a new
+column (seeded: coupon codes on `orders` → `POST /checkout` + `GET /orders/{id}` fail; fulfillment status →
+both orders GETs; marketing opt-in on `users` → both users GETs). deploy-bot never runs migrations (it says so
+on every code deploy); the manual step was skipped — and in 30% of seeds the migration file was never even
+committed. `/health` stays 200; the failing endpoints log `sqlite3.OperationalError: no such column: …`.
+Fix: apply the migration with the repo's `scripts/migrate.py --apply` (no restart needed — connections are per
+request); in the forgotten variant, write `migrations/003_<name>.sql` first (allowed by a glob in the
+manifest check). Root cause = the schema has the columns (+ the shipped migration recorded) **and** app code
+unchanged — patching or reverting the code is a workaround. Verifier generalizations that came with it: row
+hashes over generation-time columns, an additive-only schema rule (new tables/columns/indexes fine; dropping or
+retyping anything is damage), glob allow-lists, and a `db_query` check.
+
 ### Verifier & reward
 
 Deterministic, no LLM (`sregym/verifier/verify.py`), run against the *live* world at the
@@ -360,7 +372,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning)
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector)

@@ -21,6 +21,12 @@ APP_TEMPLATE_DIR = TEMPLATES_DIR / "checkout-service"
 SYSTEM_TEMPLATE_DIR = TEMPLATES_DIR / "system"
 
 ALL_SECTIONS = frozenset({"checkout", "ledger", "metrics", "cron", "runbook"})
+# features that ship with a schema migration; rendered only by fault templates that deploy them
+FEATURE_SECTIONS = {
+    "coupons": "migrations/003_coupons.sql",
+    "fulfillment": "migrations/003_fulfillment.sql",
+    "marketing_optin": "migrations/003_marketing_optin.sql",
+}
 
 # template relative path -> repo relative path
 _APP_FILES = {
@@ -34,6 +40,7 @@ _APP_FILES = {
     "checkout/main.py": "checkout/main.py",
     "checkout/serve.py": "checkout/serve.py",
     "migrations/001_init.sql": "migrations/001_init.sql",
+    "scripts/migrate.py": "scripts/migrate.py",
 }
 # files that only exist once a section exists
 _SECTION_FILES = {
@@ -70,13 +77,20 @@ def substitute(text: str, values: dict[str, str]) -> str:
     return text
 
 
-def render_app_files(sections: frozenset[str] | set[str], values: dict[str, str]) -> dict[str, str]:
-    """Return {repo_relpath: content} for the application at a given feature level."""
+def render_app_files(sections: frozenset[str] | set[str], values: dict[str, str],
+                     include_feature_migrations: bool = True) -> dict[str, str]:
+    """Return {repo_relpath: content} for the application at a given feature level.
+    Feature sections (FEATURE_SECTIONS) also bring their migration file unless ``include_feature_migrations`` is False
+    (the "developer forgot to commit the migration" case)."""
     files: dict[str, str] = {}
     mapping = dict(_APP_FILES)
     for sec, extra in _SECTION_FILES.items():
         if sec in sections:
             mapping.update(extra)
+    if include_feature_migrations:
+        for sec, mig in FEATURE_SECTIONS.items():
+            if sec in sections:
+                mapping[mig] = mig
     for tmpl_rel, repo_rel in mapping.items():
         text = (APP_TEMPLATE_DIR / tmpl_rel).read_text()
         files[repo_rel] = substitute(render_sections(text, sections), values)

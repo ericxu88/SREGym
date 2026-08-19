@@ -79,6 +79,59 @@ class ScriptedAgent(AgentAdapter):
             return bad, good
         return None
 
+    # ------------------------------------------------------------------ unapplied migration script
+    _MIGRATION_KNOWLEDGE = {  # test-oracle knowledge of the three feature variants (column -> table, full column set, name)
+        "coupon_code": ("orders", [("coupon_code", "TEXT"), ("discount_cents", "INTEGER NOT NULL DEFAULT 0")], "003_coupons"),
+        "fulfillment_status": ("orders", [("fulfillment_status", "TEXT NOT NULL DEFAULT 'unfulfilled'")], "003_fulfillment"),
+        "marketing_opt_in": ("users", [("marketing_opt_in", "INTEGER NOT NULL DEFAULT 0")], "003_marketing_optin"),
+    }
+
+    def _script_migration(self, log_excerpt: str) -> Generator[ToolCall, ToolResult | None, None]:
+        base = f"http://127.0.0.1:{self.port}"
+        m = re.search(r"no such column: (\w+)|has no column named (\w+)", log_excerpt)
+        column = (m.group(1) or m.group(2)) if m else None
+        self.notes.append(f"Errors say the schema lacks column {column!r}: a deploy shipped code ahead of its migration.")
+        yield self._call("run_shell", command=f"git -C {REPO} log --oneline -3 && git -C {REPO} show HEAD --stat")
+        yield self._call("run_shell", command=f"ls -la {REPO}/migrations")
+        if self.mode == "mask":
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Restarted.", root_cause="transient")
+            return
+        if self.mode == "workaround":
+            self.notes.append("Removing the new column from the query to stop the errors.")
+            main = f"{REPO}/checkout/main.py"
+            r = yield self._call("read_file", path=main, start_line=1, max_lines=200)
+            line = None
+            for l in (r.content if r else "").splitlines():
+                body = l.split("| ", 1)[1] if "| " in l else ""
+                if column and f", {column}" in body and body.strip().endswith('"'):
+                    line = body
+                    break
+            if line:
+                yield self._call("edit_file", path=main, old_string=line + "\n", new_string="")
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Removed the new column from the query.", root_cause="bad deploy")
+            return
+        status = yield self._call("run_shell", command=f"python {REPO}/scripts/migrate.py")
+        if status and "PENDING" in status.content:
+            self.notes.append("A migration is pending; applying it.")
+        else:
+            table, cols, name = self._MIGRATION_KNOWLEDGE.get(column or "", ("orders", [], "003_missing"))
+            self.notes.append("No migration file was shipped for this column; writing it from the feature's needs.")
+            sql = "".join(f"ALTER TABLE {table} ADD COLUMN {c} {t};\n" for c, t in cols)
+            sql += f"INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('{name}', strftime('%Y-%m-%dT%H:%M:%SZ','now'));\n"
+            yield self._call("edit_file", path=f"{REPO}/migrations/{name}.sql", old_string="", new_string=f"-- {name}: written during incident response\n" + sql)
+        yield self._call("run_shell", command=f"python {REPO}/scripts/migrate.py --apply")
+        if self.mode == "sloppy":
+            yield self._call("edit_file", path=f"{REPO}/README.md", old_string="# checkout-service", new_string="# checkout-service (fixed)")
+        yield self._call("run_shell", command=f"curl -s -o /dev/null -w '%{{http_code}}' {base}/orders/1 && curl -s -o /dev/null -w ' %{{http_code}}' {base}/users/1")
+        yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.access.* 5\d\d ", tail=True, limit=3)
+        yield self._call("resolve_incident",
+                         summary=(f"Release at HEAD referenced {column} but its schema migration had not been applied to the production "
+                                  "database (deploy-bot does not run migrations). Applied the migration with scripts/migrate.py; the "
+                                  "affected endpoints recovered without a restart."),
+                         root_cause="schema migration not applied after deploy")
+
     # ------------------------------------------------------------------ ledger divergence script
     def _script_ledger(self) -> Generator[ToolCall, ToolResult | None, None]:
         base = f"http://127.0.0.1:{self.port}"
@@ -143,7 +196,10 @@ class ScriptedAgent(AgentAdapter):
         self.notes.append("Paged for 5xx on checkout-service. Starting with the log inventory and error rate by path.")
         yield self._call("read_logs")
         yield self._call("query_metrics", metric="http_error_rate", window_minutes=60, group_by="path", step_minutes=5)
-        yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.access.* 5\d\d ", tail=True, limit=15)
+        r = yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.access.* 5\d\d ", tail=True, limit=15)
+        if r and ("no such column" in r.content or "has no column named" in r.content):
+            yield from self._script_migration(r.content)
+            return
         self.notes.append("500s carry 'unable to open database file'. Checking for restarts/config warnings around the onset.")
         yield self._call("read_logs", path=f"{REPO}/logs/app.log", grep=r"checkout\.serve|checkout\.config|Shutting down", tail=True, limit=15)
         yield self._call("read_logs", path=f"{REPO}/logs/deploy.log", tail=True, limit=8)

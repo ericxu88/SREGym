@@ -175,29 +175,31 @@ def create_databases(data: BusinessData, core_path: Path, ledger_path: Path, mig
 
 
 def db_table_snapshot(db_path: Path) -> dict[str, dict]:
-    """Per-table row count, max rowid and a hash of all current rows -- for the manifest."""
-    import hashlib
-
+    """Per-table columns, row count, max rowid and a hash of all current rows (over the generation-time
+    columns, so an additive ``ALTER TABLE ADD COLUMN`` later does not read as "rows modified") -- plus the
+    structured schema (tables/columns/indexes) -- for the manifest."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-        schema = hashlib.sha256("\n".join(
-            r[0] or "" for r in conn.execute("SELECT sql FROM sqlite_master WHERE type IN ('table','index') ORDER BY name")
-        ).encode()).hexdigest()
-        out: dict[str, dict] = {"__schema__": {"hash": schema}}
+        indexes = sorted(r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"))
+        out: dict[str, dict] = {"__schema__": {"tables": {}, "indexes": indexes}}
         for t in tables:
+            columns = [(r[1], (r[2] or "").upper()) for r in conn.execute(f'PRAGMA table_info("{t}")')]
+            out["__schema__"]["tables"][t] = {"columns": columns}
             count, max_rowid = conn.execute(f'SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM "{t}"').fetchone()
-            out[t] = {"count": count, "max_rowid": max_rowid, "hash": db_rows_hash(conn, t, max_rowid)}
+            names = [c[0] for c in columns]
+            out[t] = {"count": count, "max_rowid": max_rowid, "columns": names, "hash": db_rows_hash(conn, t, max_rowid, names)}
         return out
     finally:
         conn.close()
 
 
-def db_rows_hash(conn: sqlite3.Connection, table: str, max_rowid: int) -> str:
+def db_rows_hash(conn: sqlite3.Connection, table: str, max_rowid: int, columns: list[str] | None = None) -> str:
     import hashlib
 
+    cols = ", ".join(f'"{c}"' for c in columns) if columns else "*"
     h = hashlib.sha256()
-    for row in conn.execute(f'SELECT rowid, * FROM "{table}" WHERE rowid <= ? ORDER BY rowid', (max_rowid,)):
+    for row in conn.execute(f'SELECT rowid, {cols} FROM "{table}" WHERE rowid <= ? ORDER BY rowid', (max_rowid,)):
         h.update(repr(tuple(row)).encode())
         h.update(b"\n")
     return h.hexdigest()

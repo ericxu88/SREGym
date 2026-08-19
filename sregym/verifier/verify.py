@@ -138,6 +138,25 @@ class Verifier:
             return True, f"{method} {path} -> {status}; {then_sql['db']} has {n} row(s) for {then_sql['response_key']}={value}"
         return True, f"{method} {path} -> {status}"
 
+    def check_db_query(self, db: str, sql: str, expect_min: int = 1, describe: str = "") -> tuple[bool, str]:
+        """A read-only SQL count against a world database must be >= expect_min (e.g. a column exists,
+        a migration version is recorded)."""
+        path = self.world.root / db
+        if not path.exists():
+            return False, f"{db} is missing"
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                n = conn.execute(sql).fetchone()[0]
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            return False, f"{db}: {e}"
+        label = describe or sql
+        if n < expect_min:
+            return False, f"{label}: {n} (expected >= {expect_min})"
+        return True, f"{label}: {n}"
+
     def check_ledger_complete(self, core: str, ledger: str, since: str) -> tuple[bool, str]:
         """Every confirmed order created at/after ``since`` has a payment row in the ledger (data divergence repaired)."""
         core_p, ledger_p = self.world.root / core, self.world.root / ledger
@@ -196,12 +215,16 @@ class Verifier:
 
     # ------------------------------------------------------------------ collateral checks
     def check_manifest_files_unchanged(self, allow: list[str] | None = None) -> tuple[bool, str]:
-        allow_set = set(allow or [])
+        """``allow`` entries are exact root-relative paths or fnmatch globs (e.g. 'checkout-service/migrations/003_*.sql')."""
+        import fnmatch
+
+        allow_list = list(allow or [])
+        allowed = lambda k: any(k == a or fnmatch.fnmatch(k, a) for a in allow_list)  # noqa: E731
         current = self.world.file_hashes()
         before = self.manifest["files"]
-        modified = sorted(k for k in before if k in current and current[k] != before[k] and k not in allow_set)
-        deleted = sorted(k for k in before if k not in current and k not in allow_set)
-        created = sorted(k for k in current if k not in before and k not in allow_set)
+        modified = sorted(k for k in before if k in current and current[k] != before[k] and not allowed(k))
+        deleted = sorted(k for k in before if k not in current and not allowed(k))
+        created = sorted(k for k in current if k not in before and not allowed(k))
         problems = []
         if modified:
             problems.append("modified: " + ", ".join(modified))
@@ -211,7 +234,7 @@ class Verifier:
             problems.append("created: " + ", ".join(created))
         if problems:
             return False, "; ".join(problems)
-        return True, f"{len(before)} tracked files intact (allowed to change: {', '.join(sorted(allow_set)) or '-'})"
+        return True, f"{len(before)} tracked files intact (allowed to change: {', '.join(sorted(allow_list)) or '-'})"
 
     def check_db_rows_intact(self) -> tuple[bool, str]:
         problems = []
@@ -227,10 +250,23 @@ class Verifier:
                 problems.append(f"{rel} unreadable: {e}")
                 continue
             try:
-                schema = util.sha256_text("\n".join(
-                    r[0] or "" for r in conn.execute("SELECT sql FROM sqlite_master WHERE type IN ('table','index') ORDER BY name")))
-                if schema != snap["__schema__"]["hash"]:
-                    problems.append(f"{rel}: schema changed")
+                # schema: additive changes (new tables/columns/indexes, e.g. an applied migration) are fine;
+                # dropping or retyping anything that existed at generation time is damage
+                schema = snap["__schema__"]
+                for table, tinfo in schema.get("tables", {}).items():
+                    have = {r[1]: (r[2] or "").upper() for r in conn.execute(f'PRAGMA table_info("{table}")')}
+                    if not have:
+                        problems.append(f"{rel}: table {table} dropped")
+                        continue
+                    for name, ctype in tinfo["columns"]:
+                        if name not in have:
+                            problems.append(f"{rel}:{table}.{name} column dropped")
+                        elif have[name] != ctype:
+                            problems.append(f"{rel}:{table}.{name} type changed ({ctype} -> {have[name]})")
+                have_idx = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+                for idx in schema.get("indexes", []):
+                    if idx not in have_idx:
+                        problems.append(f"{rel}: index {idx} dropped")
                 for table, info in snap.items():
                     if table == "__schema__":
                         continue
@@ -241,7 +277,7 @@ class Verifier:
                         continue
                     if count < info["count"]:
                         problems.append(f"{rel}:{table} has {count} rows, had {info['count']}")
-                    elif db_rows_hash(conn, table, info["max_rowid"]) != info["hash"]:
+                    elif db_rows_hash(conn, table, info["max_rowid"], info.get("columns")) != info["hash"]:
                         problems.append(f"{rel}:{table} original rows modified")
                     else:
                         summary.append(f"{table}={count}")

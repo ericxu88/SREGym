@@ -48,7 +48,8 @@ Key settings:
 python -m checkout.serve          # reads ./.env, logs to LOG_PATH
 ```
 
-Schema lives in `migrations/*.sql` and is applied by the provisioning playbook.
+Schema lives in `migrations/*.sql`. deploy-bot does **not** run migrations; apply pending ones
+with `python scripts/migrate.py --apply` (plain `python scripts/migrate.py` shows status).
 
 #[[ cron
 ## Scheduled jobs
