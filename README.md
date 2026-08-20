@@ -445,6 +445,18 @@ plausible noise, never remove real evidence:
 `report.md` breaks results down by herring combination. Profiles are the intended calibration instrument:
 budgets and noise live here, not in per-template tweaks.
 
+Measured effect (claude-sonnet-5, lean prompt, seeds 1–20; both templates were 95–100% at baseline):
+
+| template | standard (20 steps, 2 herrings) | hard (12 steps, 4 herrings) |
+|---|---|---|
+| db_file_permissions | **60%** (39–78%) | **50%** (30–70%) |
+| bad_dependency_pin | — | **25%** (11–47%), 60% never_found |
+
+Honest reading: at these budgets the step budget does most of the work — trajectory analysis shows Sonnet 5
+essentially never spends calls on the decoys (0.0–0.1 decoy-touching calls per episode). The herrings raise
+ambient log volume and add candidate hypotheses, but a frontier model filters them; they may matter more for
+weaker models and for fault composition. That is a measured property of the difficulty layer, not an assumption.
+
 ## Calibration sweeps
 
 `sregym sweep` runs many seeds through the same agent config, `--concurrency N` at a time
