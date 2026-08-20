@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -222,7 +225,11 @@ def _run_one(cfg: SweepConfig, seed: int, attempt: int) -> dict[str, Any]:
     ep_dir = cfg.out_dir / "episodes" / f"seed-{seed}"
     if attempt > 1:
         ep_dir = cfg.out_dir / "episodes" / f"seed-{seed}-attempt{attempt}"
+    if ep_dir.exists():
+        shutil.rmtree(ep_dir)  # leftovers from a killed/failed attempt must never mix with a fresh run
     proc = subprocess.Popen(_episode_argv(cfg, seed, ep_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    with _procs_lock:
+        _active_procs.add(proc)
     timed_out = False
     try:
         _, stderr = proc.communicate(timeout=cfg.episode_timeout_s)
@@ -234,6 +241,8 @@ def _run_one(cfg: SweepConfig, seed: int, attempt: int) -> dict[str, Any]:
         except subprocess.TimeoutExpired:
             proc.kill()
             _, stderr = proc.communicate()
+    with _procs_lock:
+        _active_procs.discard(proc)
     result_path = ep_dir / "result.json"
     if not result_path.exists():
         reason = (f"episode exceeded the {cfg.episode_timeout_s}s deadline and was killed" if timed_out
@@ -251,12 +260,42 @@ def _run_one(cfg: SweepConfig, seed: int, attempt: int) -> dict[str, Any]:
     return res
 
 
+_procs_lock = threading.Lock()
+_active_procs: set = set()
+
+
+def _terminate_children_and_exit(signum, frame):  # pragma: no cover - signal path
+    """Worker threads blocked on subprocess reads are non-daemon: a plain sys.exit would leave a zombie
+    sweep whose threads later wake and write into files a resumed sweep is using (observed). Terminate the
+    episode subprocesses (their own atexit stops their services) and hard-exit."""
+    with _procs_lock:
+        procs = list(_active_procs)
+    for p in procs:
+        try:
+            p.terminate()
+        except OSError:
+            pass
+    deadline = time.time() + 15
+    for p in procs:
+        try:
+            p.wait(timeout=max(0.1, deadline - time.time()))
+        except Exception:  # noqa: BLE001
+            try:
+                p.kill()
+            except OSError:
+                pass
+    os._exit(128 + int(signum))
+
+
 def run_sweep(cfg: SweepConfig, progress: Callable[[str], None] | None = print) -> dict[str, Any]:
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     (cfg.out_dir / "results").mkdir(exist_ok=True)
     (cfg.out_dir / "episodes").mkdir(exist_ok=True)
     util.write_json(cfg.out_dir / "sweep.json", {**cfg.to_dict(), "started_at": util.fmt_iso(datetime.now(timezone.utc))})
     log = progress or (lambda _s: None)
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, _terminate_children_and_exit)
+        signal.signal(signal.SIGINT, _terminate_children_and_exit)
     existing = {} if cfg.rerun else _load_existing(cfg)
     todo = [s for s in cfg.seeds if not (s in existing and not existing[s].get("infra_error"))]
     skipped = len(cfg.seeds) - len(todo)
