@@ -169,6 +169,12 @@ not 0.15 (workaround). Script-only edits still fail: the host refuses to run mod
 |---|---|---|---|---|---|---|
 | claude-sonnet-5 | lean, 30 steps | 19/20 = 95% | 76–99% | 0.985 | 1 fixed_not_restarted (removed the quota on the last step) | $0.25 |
 
+**`stale_secret` — reference configuration: lean prompt, `max_steps=30`, `--stack auto`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (settlement-lag page → 401s in logs → rotation diff → restore shared secret) | $0.25 |
+
 The first measurement of this template returned **0/20, all "workaround"** — every episode migrated the two
 `kv()` call sites to the new API instead of rolling the pin back. That unanimity was the tell: the model was
 right and the rubric was opinionated. The verifier now accepts either coherent end state (see the template
@@ -385,6 +391,19 @@ privileged mounts, and faking the error string without the underlying condition 
 the quota produces the real error from the real engine, live. `finalize()` VACUUMs the core db so packed
 pages make the very first write fail deterministically.
 
+**`stale_secret`** (rung 3, template #9): every world's app now takes the payment gateway's **signed
+settlement webhooks** (`POST /webhooks/payments`, HMAC-SHA256 over the raw body, keyed with
+`WEBHOOK_SIGNING_SECRET` — a secret *shared with the gateway*; the `.env` comment block and the repo
+README both say to rotate it only in a coordinated change). Accepted settlements land in the ledger's
+`settlements` table; the traffic generator plays the gateway, signing with the canonical secret. The
+fault: a routine quarterly-rotation deploy regenerated the shared secret alongside the (legitimate)
+`SESSION_SECRET` rotation. From the restart every webhook 401s with a `<pkg>.webhooks` WARNING and
+`webhook_signature_failures_total` climbing; settlements silently stop while checkouts keep succeeding —
+the second zero-5xx template, paged on `ledger_last_settlement_age_seconds`. Fix: restore the previous
+shared secret from git history and restart (the SESSION_SECRET rotation may stay — root cause is the
+narrowest object). Bypassing signature validation in code resolves the symptom but fails
+`app_code_unchanged`: authenticating with the counterparty again is the fix, not accepting unsigned events.
+
 **Fault composition** (`--fault composed` or `composed:<pair>`): two independent faults in one world — a
 deploy-borne one and an environmental one — with one page (the first alert that fired, plus the second
 stacked onto it as "ALSO TRIGGERED"). Vetted pairs: `migration+perms` (with a real causal ordering — the
@@ -578,7 +597,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning) · herrings.py
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py · disk_full.py · composed.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py · disk_full.py · stale_secret.py · composed.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector) · cron.py (cron daemon)
