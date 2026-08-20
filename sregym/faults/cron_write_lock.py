@@ -99,14 +99,13 @@ class CronWriteLock(FaultTemplate):
                    "log": f"{SERVICE_NAME}/logs/app.log", "forbid_pattern": "database is locked", "lock_db": CORE, "lock_wait_s": 60},
                   "POST /checkout succeeds every 5s for 65s and no new 'database is locked' errors are logged"),
         ]
+        # Root cause is the SCHEDULE alone. Editing the job script or bumping app timeouts alongside a
+        # correct schedule fix is a change-control violation, not a wrong diagnosis -- the collateral
+        # manifest check (allow = only the cron file) already catches those edits at the 0.5 tier.
+        # (A script/app edit *instead of* fixing the schedule still fails cron_entry_disabled.)
         root_cause = [
             Check("cron_entry_disabled", "cron_job_disabled", {"file": CRON_FILE, "script": "archive_orders.py"},
                   "the archive job is no longer scheduled to run during business hours"),
-            Check("job_script_unchanged", "files_unchanged", {"files": [f"{SERVICE_NAME}/scripts/archive_orders.py"]},
-                  "the job script was not edited (the schedule is what is wrong; modified scripts would not run anyway)"),
-            Check("app_code_unchanged", "files_unchanged",
-                  {"files": [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
-                  "application code unchanged"),
         ]
         collateral = standard_collateral_checks(SERVICE_NAME, allow=[CRON_FILE], rules=self.forbidden_rules)
         spec = VerificationSpec(

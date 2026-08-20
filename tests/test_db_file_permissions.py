@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from sregym import util
 from sregym.harness.agents.scripted import ScriptedAgent
 from sregym.harness.episode import EpisodeConfig, run_episode
 from sregym.harness.prompts import build_task_prompt

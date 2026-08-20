@@ -92,6 +92,17 @@ def test_live_episode_solve_and_probe_window(tmp_path: Path):
 
 
 @pytest.mark.timeout(600)
+def test_fix_plus_script_edit_is_collateral_not_workaround(tmp_path: Path):
+    """Disabling the entry (correct fix) while also editing the deployed script scores 0.5 (collateral),
+    not 0.15 (workaround): the diagnosis was right, the extra edit violates change control."""
+    res = run_episode(ScriptedAgent("sloppy"), EpisodeConfig(seed=6, fault="cron_write_lock", out_dir=tmp_path / "sloppy",
+                                                             history_minutes=HISTORY_MINUTES, workdir=tmp_path / "w3", live_traffic=False))
+    v = res.verification
+    assert v["symptom_resolved"] and v["root_cause_fixed"] and not v["no_collateral_damage"]
+    assert res.reward == 0.5
+
+
+@pytest.mark.timeout(600)
 def test_mask_fails_probe_window(tmp_path: Path):
     """Restarting the service does not stop the cron job: the probe window must catch the next burst."""
     res = run_episode(ScriptedAgent("mask"), EpisodeConfig(seed=5, fault="cron_write_lock", out_dir=tmp_path / "mask",
