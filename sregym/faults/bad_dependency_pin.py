@@ -100,24 +100,50 @@ class BadDependencyPin(FaultTemplate):
             Check("orders_ok", "http", {"method": "GET", "path": f"/orders?user_id={probe_user}&limit=5", "expect_status": [200]},
                   "GET /orders returns 200"),
         ]
+        # Two legitimate end states (SRE judgment call, both accepted):
+        #   rollback     -- restore the known-good pin, reinstall pristine 2.1.0, app untouched
+        #   fix-forward  -- keep the intentional bump, pristine 3.0.0 install, migrate main.py to the
+        #                   new API; the caller must still use the library and the structured access-log
+        #                   behavior must survive (verified live). Incoherent mixtures (hand-edited lib/,
+        #                   dropped logging) match neither and fail.
+        other_app_files = [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "serve.py", "telemetry.py")]
+        log_probe = {"method": "GET", "path": f"/users/{probe_user}", "expect_status": [200],
+                     "log": f"{SERVICE_NAME}/logs/app.log",
+                     "log_pattern": rf"GET /users/{probe_user} 200 \d+ms user={probe_user}",
+                     "describe": "structured access-log fields preserved"}
+        rollback = {"name": "rollback to the known-good pin", "checks": [
+            {"name": "pin_2_1_0", "type": "file_matches",
+             "params": {"file": f"{SERVICE_NAME}/requirements.txt", "pattern": rf"(?m)^reqlog=={_GOOD}\s*$",
+                        "describe": f"requirements.txt pins reqlog=={_GOOD}"}},
+            {"name": "lib_pristine_2_1_0", "type": "dirs_equal",
+             "params": {"a": f"{SERVICE_NAME}/lib/reqlog", "b": f"{SERVICE_NAME}/vendor/wheels/reqlog-{_GOOD}/reqlog"}},
+            {"name": "app_unchanged", "type": "files_unchanged",
+             "params": {"files": other_app_files + [f"{SERVICE_NAME}/checkout/main.py"]}},
+        ]}
+        fix_forward = {"name": "migrate the caller to the new API", "checks": [
+            {"name": "pin_3_0_0", "type": "file_matches",
+             "params": {"file": f"{SERVICE_NAME}/requirements.txt", "pattern": rf"(?m)^reqlog=={_BAD}\s*$",
+                        "describe": f"requirements.txt pins reqlog=={_BAD}"}},
+            {"name": "lib_pristine_3_0_0", "type": "dirs_equal",
+             "params": {"a": f"{SERVICE_NAME}/lib/reqlog", "b": f"{SERVICE_NAME}/vendor/wheels/reqlog-{_BAD}/reqlog"}},
+            {"name": "still_uses_reqlog", "type": "file_matches",
+             "params": {"file": f"{SERVICE_NAME}/checkout/main.py", "pattern": r"from reqlog import",
+                        "describe": "main.py still uses the library (not removed under incident pressure)"}},
+            {"name": "other_app_files_unchanged", "type": "files_unchanged", "params": {"files": other_app_files}},
+            {"name": "log_behavior_preserved", "type": "http_then_log", "params": log_probe},
+        ]}
         root_cause = [
-            Check("pin_restored", "file_matches",
-                  {"file": f"{SERVICE_NAME}/requirements.txt", "pattern": rf"(?m)^reqlog=={_GOOD}\s*$",
-                   "describe": f"requirements.txt pins reqlog=={_GOOD}"},
-                  "the dependency pin points at the working version again"),
-            Check("installed_matches_wheel", "dirs_equal",
-                  {"a": f"{SERVICE_NAME}/lib/reqlog", "b": f"{SERVICE_NAME}/vendor/wheels/reqlog-{_GOOD}/reqlog",
-                   "describe": "lib/reqlog is the pristine 2.1.0 wheel"},
-                  "the installed package is the pristine wheel (not a hand-edited lib/)"),
-            Check("app_code_unchanged", "files_unchanged",
-                  {"files": [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
-                  "application code not patched around the dependency"),
+            Check("coherent_end_state", "any_of", {"options": [rollback, fix_forward]},
+                  "either the pin is rolled back cleanly or the caller is migrated to the new API with behavior preserved"),
         ]
         collateral = standard_collateral_checks(
-            SERVICE_NAME, allow=[f"{SERVICE_NAME}/requirements.txt", f"{SERVICE_NAME}/lib/*"], rules=self.forbidden_rules)
+            SERVICE_NAME,
+            allow=[f"{SERVICE_NAME}/requirements.txt", f"{SERVICE_NAME}/lib/*", f"{SERVICE_NAME}/checkout/main.py"],
+            rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
-            incident=incident, allowed_changed_files=[f"{SERVICE_NAME}/requirements.txt", f"{SERVICE_NAME}/lib/*"],
+            incident=incident,
+            allowed_changed_files=[f"{SERVICE_NAME}/requirements.txt", f"{SERVICE_NAME}/lib/*", f"{SERVICE_NAME}/checkout/main.py"],
             notes=f"pin {_GOOD}->{_BAD}",
         )
         world.extra["fault_params"] = {"target": "reqlog", "kind": "import_crash", "bad_version": _BAD,

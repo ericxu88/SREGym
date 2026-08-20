@@ -266,6 +266,44 @@ class Verifier:
             return False, "modified: " + ", ".join(changed)
         return True, f"{len(files)} files unchanged"
 
+    def check_any_of(self, options: list[dict[str, Any]]) -> tuple[bool, str]:
+        """Passes if any option's check list fully passes -- for faults with more than one legitimate
+        end state (e.g. roll a bad pin back vs. migrate the caller forward). Each option:
+        {"name": str, "checks": [check dicts]}."""
+        summaries = []
+        for opt in options:
+            results = []
+            for c in opt["checks"]:
+                try:
+                    ok, detail = self._dispatch(Check(**c))
+                except Exception as e:  # noqa: BLE001
+                    ok, detail = False, f"crashed: {e}"
+                results.append((c.get("name", c["type"]), ok, detail))
+            if all(ok for _, ok, _ in results):
+                return True, f"state matches '{opt['name']}': " + "; ".join(d for _, _, d in results)
+            failed = next((f"{n}: {d}" for n, ok, d in results if not ok))
+            summaries.append(f"{opt['name']} (failed {failed})")
+        return False, "no coherent end state: " + " | ".join(summaries)
+
+    def check_http_then_log(self, method: str, path: str, expect_status: list[int], log: str,
+                            log_pattern: str, body: Any = None, describe: str = "") -> tuple[bool, str]:
+        """Make a request, then require a matching line near the end of a log -- verifies observable
+        behavior (e.g. structured access-log fields) survived a code change."""
+        log_path = self.world.root / log
+        if not log_path.exists():
+            return False, f"{log} is missing"
+        n_before = util.count_lines(log_path)  # judge only lines produced by THIS probe, never history
+        ok, detail = self.check_http(method, path, expect_status, body=body)
+        if not ok:
+            return False, detail
+        time.sleep(0.4)  # let the log line flush
+        new_lines = log_path.read_text(errors="replace").splitlines()[n_before:]
+        rx = re.compile(log_pattern)
+        if any(rx.search(l) for l in new_lines):
+            return True, describe or f"{log} contains {log_pattern!r} after {method} {path}"
+        return False, (describe + ": " if describe else "") + \
+            f"no new line matching {log_pattern!r} in {log} after {method} {path} ({len(new_lines)} new lines)"
+
     def check_file_matches(self, file: str, pattern: str, describe: str = "") -> tuple[bool, str]:
         """A text file must match a regex (e.g. requirements.txt pins the working version)."""
         p = self.world.root / file

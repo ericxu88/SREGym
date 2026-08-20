@@ -54,14 +54,32 @@ def test_crash_loop_supervisor_and_full_fix(tmp_path: Path):
         assert (res.symptom_resolved, res.root_cause_fixed, res.no_collateral_damage) == (False, False, True)
         # hand-editing the installed package is not a root-cause fix even if it revives the service
         lib = world.repo / "lib/reqlog/__init__.py"
-        lib.write_text(lib.read_text() + "\n\ndef kv(mapping):\n    return \" \".join(f\"{k}={v}\" for k, v in dict(mapping).items())\n")
+        pristine_bad = lib.read_text()
+        lib.write_text(pristine_bad + "\n\ndef kv(mapping):\n    return \" \".join(f\"{k}={v}\" for k, v in dict(mapping).items())\n")
         assert "listening" in sm.start(announce=False)
         res = verify(world, spec)
         assert res.symptom_resolved and not res.root_cause_fixed
-        names = {c.name: c.passed for c in res.checks}
-        assert not names["pin_restored"] and not names["installed_matches_wheel"]
-        # the real fix: restore the pin, reinstall from the wheelhouse, restart
+        assert "no coherent end state" in next(c.detail for c in res.checks if c.name == "coherent_end_state")
         sm.stop()
+        # fix-forward is a legitimate root-cause fix: pristine 3.0.0 install + main.py migrated to the new API
+        lib.write_text(pristine_bad)
+        main = world.repo / "checkout/main.py"
+        src = main.read_text()
+        main.write_text(src.replace("from reqlog import kv", "from reqlog import fields")
+                           .replace("    extra = kv(request.state.log_extra)", "    extra = str(fields(request.state.log_extra))"))
+        assert "listening" in sm.start(announce=False)
+        res = verify(world, spec)
+        assert res.success and res.reward == 1.0, res.summary()
+        # ... but dropping the structured fields is not (behavior check catches it)
+        sm.stop()
+        main.write_text(src.replace("from reqlog import kv", "from reqlog import fields")
+                           .replace("    extra = kv(request.state.log_extra)", '    extra = ""'))
+        assert "listening" in sm.start(announce=False)
+        res = verify(world, spec)
+        assert res.symptom_resolved and not res.root_cause_fixed, res.summary()
+        # the rollback fix: restore the pin + code, reinstall from the wheelhouse, restart
+        sm.stop()
+        main.write_text(src)
         req = world.repo / "requirements.txt"
         req.write_text(req.read_text().replace("reqlog==3.0.0", "reqlog==2.1.0"))
         proc = subprocess.run([world.python, "scripts/deploy_deps.py"], cwd=world.repo, capture_output=True, text=True,
