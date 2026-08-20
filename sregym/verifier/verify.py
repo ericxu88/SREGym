@@ -285,6 +285,17 @@ class Verifier:
             summaries.append(f"{opt['name']} (failed {failed})")
         return False, "no coherent end state: " + " | ".join(summaries)
 
+    def check_http_burst(self, method: str, path: str, expect_status: list[int], n: int = 5,
+                         body: Any = None, describe: str = "") -> tuple[bool, str]:
+        """N rapid sequential requests must ALL return an expected status (e.g. a user's legitimate
+        retry burst must not be rate-limited)."""
+        for i in range(1, n + 1):
+            status, text = util.http_request(method, self.base_url + path, body=body, timeout=8)
+            if status not in expect_status:
+                return False, (describe + ": " if describe else "") +                     f"request {i}/{n} -> {status if status else 'connection failed'} (expected {expect_status}): {text[:120]}"
+            time.sleep(0.15)
+        return True, describe or f"{n} rapid {method} {path} requests all returned {expect_status}"
+
     def check_http_then_log(self, method: str, path: str, expect_status: list[int], log: str,
                             log_pattern: str, body: Any = None, describe: str = "") -> tuple[bool, str]:
         """Make a request, then require a matching line near the end of a log -- verifies observable

@@ -54,6 +54,7 @@ class _Sim:
     ledger_base_count: int = 0
     ledger_base_last: datetime | None = None
     metrics: dict[str, dict] = field(default_factory=dict)  # minute-iso -> aggregates
+    rate_counts: dict[tuple[int, str], int] = field(default_factory=dict)  # (user, minute) -> checkout attempts
     seq: int = 0
     stats: dict[str, Any] = field(default_factory=lambda: {"requests": 0, "errors": 0, "incident_requests": 0, "incident_errors": 0})
 
@@ -199,6 +200,66 @@ def _record_request(sim: _Sim, ts: datetime, method: str, template: str, path: s
             sim.stats["incident_errors"] += 1
 
 
+def _checkout_attempt(sim: _Sim, ts: datetime, user_id: int, failing: bool, core_broken: bool,
+                      override: dict | None, slow_window: bool) -> None:
+    rng, inc = sim.rng, sim.incident
+    slow = slow_window and rng.random() < 0.2
+    latency = tp.latency_ms(rng, "/checkout", slow=slow)
+    extra: dict[str, Any] = {"user": user_id}
+    status, error, tb_key = 200, None, None
+    # per-user fixed-window rate limiter (mirrors the app's _RateLimiter; healthy config allows bursts)
+    limit = 600
+    rl = inc.extra.get("rate_limit") if inc else None
+    if rl and ts >= util.parse_iso(rl["since"]):
+        limit = int(rl["limit"])
+    minute_key = (user_id, ts.strftime("%Y-%m-%dT%H:%M"))
+    sim.rate_counts[minute_key] = sim.rate_counts.get(minute_key, 0) + 1
+    if sim.rate_counts[minute_key] > limit:
+        sim.events.append(_Event(ts, [_fmt(ts, "WARNING", "checkout.ratelimit", f"user={user_id} exceeded {limit} checkouts/min")], sim.next_seq()))
+        _bump_metric(sim, ts, "rate_limited_requests_total", {}, 1)
+        _record_request(sim, ts, "POST", "/checkout", "/checkout", 429, tp.latency_ms(rng, "/orders"), extra, None, None)
+        return
+    r = rng.random()
+    if failing:
+        status = 500
+        error = override["error"] if override else inc.error_message
+        tb_key = override["tb"] if override else ("checkout" if core_broken else "checkout_ledger")
+        latency = tp.latency_ms(rng, "/orders")  # fails fast
+        if override and override.get("latency_ms"):
+            latency = float(override["latency_ms"]) + rng.uniform(0, 30)
+    elif r < 0.012:
+        status = 422
+        extra = {}
+    elif r < 0.03:
+        status = 400
+    elif r < 0.04:
+        status = 404
+        extra["user"] = rng.randint(sim.user_ids[-1] + 1, sim.user_ids[-1] + 5000)
+    else:
+        status = 201
+        sim.max_order_id += 1
+        order_id = sim.max_order_id
+        extra["order"] = order_id
+        items = rng.sample(sim.products, k=min(len(sim.products), rng.choice([1, 1, 1, 2, 2, 3])))
+        total = 0
+        created = util.fmt_iso(ts)
+        for p_ in items:
+            qty = rng.choice([1, 1, 1, 2, 3])
+            total += p_["price_cents"] * qty
+            sim.new_items.append((order_id, p_["id"], qty, p_["price_cents"]))
+        sim.new_orders.append((order_id, user_id, "confirmed", total, "USD", created, created))
+        payment = (order_id, user_id, total, "USD", rng.choice(["card"] * 7 + ["paypal"] * 2 + ["apple_pay"]),
+                   "captured", "ch_%016x" % rng.getrandbits(64), created)
+        diverted = bool(inc) and ts >= inc.incident_at and bool(inc.extra.get("payments_db"))
+        if diverted:
+            sim.diverted_payments.append(payment)
+        else:
+            sim.new_payments.append(payment)
+            sim.ledger_payment_times.append(ts)
+    warn_lines = [f"slow database transaction ({latency:.0f}ms) db=core"] if slow else None
+    _record_request(sim, ts, "POST", "/checkout", "/checkout", status, latency, extra, error, tb_key, warn_lines)
+
+
 def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
     rng, inc = sim.rng, sim.incident
     method, template = tp.pick_endpoint(rng)
@@ -219,45 +280,20 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
 
     if template == "/checkout":
         user_id = rng.choice(sim.user_ids)
-        extra["user"] = user_id
-        path = "/checkout"
-        r = rng.random()
-        if failing:
-            status = 500
-            error = override["error"] if override else inc.error_message
-            tb_key = override["tb"] if override else ("checkout" if core_broken else "checkout_ledger")
-            latency = tp.latency_ms(rng, "/orders")  # fails fast
-            if override and override.get("latency_ms"):
-                latency = float(override["latency_ms"]) + rng.uniform(0, 30)
-        elif r < 0.012:
-            status = 422
-            extra = {}
-        elif r < 0.03:
-            status = 400
-        elif r < 0.04:
-            status = 404
-            extra["user"] = rng.randint(sim.user_ids[-1] + 1, sim.user_ids[-1] + 5000)
-        else:
-            status = 201
-            sim.max_order_id += 1
-            order_id = sim.max_order_id
-            extra["order"] = order_id
-            items = rng.sample(sim.products, k=min(len(sim.products), rng.choice([1, 1, 1, 2, 2, 3])))
-            total = 0
-            created = util.fmt_iso(ts)
-            for p in items:
-                qty = rng.choice([1, 1, 1, 2, 3])
-                total += p["price_cents"] * qty
-                sim.new_items.append((order_id, p["id"], qty, p["price_cents"]))
-            sim.new_orders.append((order_id, user_id, "confirmed", total, "USD", created, created))
-            payment = (order_id, user_id, total, "USD", rng.choice(["card"] * 7 + ["paypal"] * 2 + ["apple_pay"]),
-                       "captured", "ch_%016x" % rng.getrandbits(64), created)
-            diverted = bool(inc) and ts >= inc.incident_at and bool(inc.extra.get("payments_db"))
-            if diverted:
-                sim.diverted_payments.append(payment)
-            else:
-                sim.new_payments.append(payment)
-                sim.ledger_payment_times.append(ts)
+        _checkout_attempt(sim, ts, user_id, failing, core_broken, override, slow_window)
+        if rng.random() < tp.BURST_PROB:  # double-click / client retry / split cart
+            burst_at = ts
+            for _ in range(rng.randint(*tp.BURST_EXTRA)):
+                burst_at += timedelta(seconds=rng.uniform(1.2, 9.0))
+                if burst_at >= sim.world.now:
+                    break
+                b_failing = bool(inc) and burst_at >= inc.incident_at and key in inc.failing_endpoints
+                if b_failing and burst:
+                    phase = (burst_at - inc.incident_at).total_seconds() % float(burst["period_s"])
+                    b_failing = burst["offset_s"] <= phase < burst["offset_s"] + burst["duration_s"]
+                b_override = (inc.extra.get("endpoint_errors") or {}).get(key) if b_failing else None
+                _checkout_attempt(sim, burst_at, user_id, b_failing, core_broken, b_override, slow_window)
+        return
     elif template == "/orders/{order_id}":
         if rng.random() < 0.05:
             order_id = rng.randint(sim.max_order_id + 1, sim.max_order_id + 20000)

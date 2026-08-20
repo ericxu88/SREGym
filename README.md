@@ -151,6 +151,18 @@ not 0.15 (workaround). Script-only edits still fail: the host refuses to run mod
 |---|---|---|---|---|---|---|
 | claude-sonnet-5 | lean, 30 steps | 19/20 = 95% | 76–99% | 0.95 | never_found 1 (the `data/` 0555 variant — hardest at 80%; both file variants 100%) | $0.28 |
 
+**`bad_dependency_pin` — reference configuration: lean prompt, `max_steps=30`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (every episode chose fix-forward; ~21 steps, ~$0.15) | $0.15 |
+
+The first measurement of this template returned **0/20, all "workaround"** — every episode migrated the two
+`kv()` call sites to the new API instead of rolling the pin back. That unanimity was the tell: the model was
+right and the rubric was opinionated. The verifier now accepts either coherent end state (see the template
+description above); the re-measure under the corrected rubric is the 100% row. Difficulty here will come from
+red herrings and step budgets, not from disqualifying legitimate engineering.
+
 The causal-depth (deferred-restart) variant did not reduce success (89% vs 82% at 30 steps): the model reads
 `git log -p -- .env` rather than trusting `git show HEAD`. Episodes are ~2× longer than `env_var_typo` because a
 complete fix also requires the data backfill; at 22 steps the typical failure is "config fixed and restarted,
@@ -338,6 +350,16 @@ structured access-log behavior verified live by a probe-then-grep check). Incohe
 `lib/`, edited wheelhouse, dropped log fields — match neither state and fail (new checks: `any_of`,
 `file_matches`, `dirs_equal`, `http_then_log`).
 
+**`rate_limit_misconfig`** (rung 3, template #7): a config deploy set `RATE_LIMIT_PER_MINUTE` to 1–3 —
+in the flagship variant the commit message says "clamp to 100/min" while the diff sets **1** (dropped
+zeroes). The first pure-4xx policy incident: zero 5xx, `/health` green, latency normal — but checkout
+traffic contains legitimate bursts (double-clicks, client retries, split carts; all worlds simulate them,
+live and historical), and every attempt past the limit 429s with a `checkout.ratelimit` WARNING and a
+`rate_limited_requests_total` tick. The page fires on the counter, not an error rate. Fix: restore a sane
+per-user value (≥ 60 accepted — the intended 100 and the old 600 both pass) and restart; patching the
+limiter code is a workaround. Symptom verification is a **burst probe** (`http_burst`): 6 rapid checkouts
+by one user must all return 201.
+
 ### Verifier & reward
 
 Deterministic, no LLM (`sregym/verifier/verify.py`), run against the *live* world at the
@@ -441,7 +463,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning)
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector) · cron.py (cron daemon)

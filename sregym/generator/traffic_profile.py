@@ -13,6 +13,9 @@ ENDPOINT_MIX: list[tuple[int, str, str]] = [
     (8, "GET", "/users"),
 ]
 HEALTH_INTERVAL_S = 10  # load balancer probe
+# checkout bursts: double-clicks / client retries / split carts -- a user fires several checkouts in seconds
+BURST_PROB = 0.15
+BURST_EXTRA = (1, 3)  # additional attempts
 METRICS_INTERVAL_S = 15  # prometheus scrape
 
 USER_AGENTS = [

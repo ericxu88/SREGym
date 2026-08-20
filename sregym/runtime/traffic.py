@@ -52,6 +52,12 @@ class TrafficGenerator(threading.Thread):
             body = {"user_id": rng.choice(w.sample_user_ids),
                     "items": [{"sku": s, "quantity": rng.choice([1, 1, 2])} for s in rng.sample(w.skus, k=min(len(w.skus), rng.choice([1, 1, 2])))],
                     "payment_method": rng.choice(["card"] * 7 + ["paypal"] * 2 + ["apple_pay"])}
+            if rng.random() < tp.BURST_PROB:  # double-click / client retry: same user, right away
+                self._request(method, path, body, rng.choice(tp.USER_AGENTS))
+                for _ in range(rng.randint(*tp.BURST_EXTRA)):
+                    time.sleep(rng.uniform(0.3, 1.2))
+                    self._request(method, path, body, rng.choice(tp.USER_AGENTS))
+                return
         elif template == "/orders/{order_id}":
             path = f"/orders/{rng.randint(max(1, w.max_order_id - 3000), w.max_order_id + 20)}"
         elif template == "/orders":
