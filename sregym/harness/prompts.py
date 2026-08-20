@@ -53,7 +53,13 @@ def build_task_prompt(world: World, incident: IncidentProfile, seed: int | None 
 
     rng = random.Random((seed if seed is not None else world.seed) ^ 0x9A6E)
     template = get_fault(fault or world.fault or "env_var_typo")
-    return template.render_page(world, incident, rng)
+    page = template.render_page(world, incident, rng)
+    chatter = world.extra.get("herring_chatter")
+    if chatter:
+        handles = rng.sample(["@maya", "@dev-oncall", "@sam.k", "@infra-bot watcher", "@priya"], k=len(chatter))
+        block = "\n".join(f"  {h}: {line}" for h, line in zip(handles, chatter))
+        page = page.replace("\n\nCurrent time is", f"\n\n#incidents (last {rng.randint(6, 14)}m):\n{block}\n\nCurrent time is")
+    return page
 
 
 def page_footer(world: World) -> str:

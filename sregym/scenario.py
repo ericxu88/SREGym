@@ -1,21 +1,41 @@
-"""Scenario preparation: healthy world -> injected fault -> historical evidence -> frozen manifest.
+"""Scenario preparation: healthy world -> red herrings -> injected fault -> evidence -> manifest.
 
-Shared by the episode harness, the CLI (``generate``/``run``) and the test-suite fixtures.
+Difficulty profiles bundle the realism-preserving knobs (step budget, red-herring count).
 """
 from __future__ import annotations
 
+import random
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from sregym.faults.base import VerificationSpec, get_fault
+from sregym.generator.herrings import apply_red_herrings
 from sregym.generator.logs import generate_history
 from sregym.generator.world import World
 
 
+@dataclass(frozen=True)
+class DifficultyProfile:
+    name: str
+    max_steps: int
+    red_herrings: int
+
+
+PROFILES = {
+    "baseline": DifficultyProfile("baseline", max_steps=30, red_herrings=0),
+    "standard": DifficultyProfile("standard", max_steps=20, red_herrings=2),
+    "hard": DifficultyProfile("hard", max_steps=12, red_herrings=4),
+}
+
+
 def prepare_world(seed: int, fault: str = "env_var_typo", root: Path | None = None, now: datetime | None = None,
-                  history_minutes: int = 180) -> tuple[World, VerificationSpec]:
-    """Build the stack, inject the fault, write the evidence trail, freeze the manifest."""
+                  history_minutes: int = 180, difficulty: str = "baseline") -> tuple[World, VerificationSpec]:
+    """Build the stack, add the profile's red herrings, inject the fault, write the evidence, freeze the manifest."""
+    profile = PROFILES[difficulty]
     world = World.build(seed, root=root, now=now, history_minutes=history_minutes)
+    world.extra["difficulty"] = profile.name
+    apply_red_herrings(world, profile.red_herrings, random.Random((seed * 2_654_435_761) ^ 0x4E44))
     template = get_fault(fault)
     spec = template.inject(world, seed)
     generate_history(world, spec.incident)

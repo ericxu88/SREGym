@@ -161,7 +161,7 @@ def _bump_metric(sim: _Sim, ts: datetime, name: str, labels: dict[str, str], val
 
 def _record_request(sim: _Sim, ts: datetime, method: str, template: str, path: str, status: int,
                     latency: float, extra: dict[str, Any], error: str | None, tb_key: str | None,
-                    warn_lines: list[str] | None = None, ua: str | None = None) -> None:
+                    warn_lines: list[str] | None = None, ua: str | None = None, ip: str | None = None) -> None:
     rng = sim.rng
     req_id = "%08x" % rng.getrandbits(32)
     lines: list[str] = []
@@ -189,7 +189,7 @@ def _record_request(sim: _Sim, ts: datetime, method: str, template: str, path: s
         ua = ua or rng.choice(tp.USER_AGENTS)
         size = {200: rng.randint(180, 620), 201: rng.randint(150, 220), 400: rng.randint(40, 90), 404: 27,
                 422: rng.randint(90, 160), 429: 32, 500: 98, 503: rng.randint(150, 220)}.get(status, 100)
-        ip = "10.0.4.12" if template == "/metrics" else tp.fake_client_ip(rng)
+        ip = ip or ("10.0.4.12" if template == "/metrics" else tp.fake_client_ip(rng))
         sim.nginx_access.append((ts, f'{ip} - - [{ts.strftime("%d/%b/%Y:%H:%M:%S +0000")}] "{method} {path} HTTP/1.1" {status} {size} "-" "{ua}"'))
     sim.stats["requests"] += 1
     if status >= 500:
@@ -443,6 +443,20 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
             _simulate_request(sim, ts, slow_window)
         minute += timedelta(minutes=1)
 
+    # ------------------------------------------------------------------ red-herring traffic (e.g. a bot scan)
+    for burst_cfg in world.extra.get("extra_traffic", []):
+        if burst_cfg.get("kind") != "bot_scan":
+            continue
+        t = util.parse_iso(burst_cfg["start"])
+        stop = min(end, t + timedelta(seconds=burst_cfg["duration_s"]))
+        ip, ua = burst_cfg["ip"], burst_cfg["ua"]
+        while t < stop:
+            order_id = rng.randint(sim.max_order_id + 5000, sim.max_order_id + 99999)
+            if not (gap and gap[0] <= t <= gap[1]):
+                _record_request(sim, t, "GET", "/orders/{order_id}", f"/orders/{order_id}", 404,
+                                tp.latency_ms(rng, "/orders/{order_id}"), {"order": order_id}, None, None, ua=ua, ip=ip)
+            t += timedelta(seconds=rng.expovariate(burst_cfg["rps"]))
+
     # ------------------------------------------------------------------ probes: LB health + prometheus
     t = start.replace(second=start.second - start.second % tp.HEALTH_INTERVAL_S, microsecond=0) + timedelta(milliseconds=rng.randint(0, 900))
     while t < end:
@@ -520,6 +534,9 @@ def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: rando
         when = util.parse_iso(c["when"]) + timedelta(minutes=rng.uniform(2, 7))
         sha = c["sha"][:7]
         lines += _deploy_lines(when, sha, c["author"], c["message"], config_only=c["message"].startswith(("ops:", "chore: rotate")), rng=rng)
+    herring = world.extra.get("herring_deploys", [])
+    if herring:
+        custom = sorted((custom or []) + herring, key=lambda d: d["when"])
     if custom:
         for d in custom:
             restart_at = incident.restart_at if d.get("restart") == "restart" else None

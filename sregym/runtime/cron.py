@@ -119,8 +119,7 @@ class CronRunner(threading.Thread):
     def _run_job(self, job: dict, minute: datetime) -> None:
         argv = self._validate(job["command"])
         if argv is None:
-            self._log(f"crond: skipped unsupported job command: {job['command'][:80]}")
-            return
+            return  # non-python entries (find/sqlite3 maintenance...) are outside this runner; silence is realistic
         script = argv[1]
         full = (self.world.repo / script).resolve()
         rel = util.relpath(full, self.world.root)

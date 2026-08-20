@@ -13,6 +13,13 @@ from pathlib import Path
 from sregym import util
 
 
+def _resolve_steps(args: argparse.Namespace) -> int:
+    """Explicit --max-steps wins; otherwise the difficulty profile's budget."""
+    from sregym.scenario import PROFILES
+
+    return args.max_steps if args.max_steps is not None else PROFILES[args.difficulty].max_steps
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     from sregym.harness.agents import make_agent
     from sregym.harness.episode import EpisodeConfig, run_episode
@@ -25,10 +32,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
                   "the API call will likely fail (use --agent scripted for an offline demo)", file=sys.stderr)
     agent = make_agent(args.agent, **_agent_kwargs(args))
     config = EpisodeConfig(
-        seed=args.seed, fault=args.fault, max_steps=args.max_steps, token_budget=args.token_budget,
+        seed=args.seed, fault=args.fault, max_steps=_resolve_steps(args), token_budget=args.token_budget,
         workdir=Path(args.workdir) if args.workdir else None, keep_world=args.keep_world,
         history_minutes=args.history_minutes, out_dir=Path(args.out) if args.out else None,
-        live_traffic=not args.no_traffic, prompt_style=args.prompt_style,
+        live_traffic=not args.no_traffic, prompt_style=args.prompt_style, difficulty=args.difficulty,
     )
     result = run_episode(agent, config, verbose=not args.quiet)
     print()
@@ -167,9 +174,10 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             print("warning: no Anthropic credentials found (ANTHROPIC_API_KEY / ./.env / ant profile)", file=sys.stderr)
     cfg = SweepConfig(
         seeds=parse_seeds(args.seeds), out_dir=Path(args.out), agent=args.agent, agent_kwargs=_agent_kwargs(args),
-        fault=args.fault, max_steps=args.max_steps, token_budget=args.token_budget, concurrency=args.concurrency,
+        fault=args.fault, max_steps=_resolve_steps(args), token_budget=args.token_budget, concurrency=args.concurrency,
         history_minutes=args.history_minutes, live_traffic=not args.no_traffic, retries=args.retries, rerun=args.rerun,
         keep_worlds=args.keep_worlds, prompt_style=args.prompt_style, episode_timeout_s=args.episode_timeout,
+        difficulty=args.difficulty,
     )
     summary = run_sweep(cfg)
     if summary.get("n_model_results"):
@@ -224,7 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--thinking", choices=["adaptive", "off"], default="adaptive", help="adaptive thinking (default) or none")
     r.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None, help="output_config.effort (default: API default)")
     r.add_argument("--mode", default="solve", help="scripted agent mode: solve|mask|workaround|noop|sloppy")
-    r.add_argument("--max-steps", type=int, default=30)
+    r.add_argument("--max-steps", type=int, default=None, help="explicit step budget (default: the difficulty profile's)")
+    r.add_argument("--difficulty", choices=["baseline", "standard", "hard"], default="baseline",
+                    help="difficulty profile: red herrings + default step budget")
     r.add_argument("--prompt-style", choices=["full", "lean"], default="full", help="system prompt variant (lean = no spelled-out resolution norms)")
     r.add_argument("--token-budget", type=int, default=400_000)
     r.add_argument("--history-minutes", type=int, default=180)
@@ -271,7 +281,9 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--thinking", choices=["adaptive", "off"], default="adaptive")
     sw.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
     sw.add_argument("--mode", default="solve", help="scripted agent mode")
-    sw.add_argument("--max-steps", type=int, default=30)
+    sw.add_argument("--max-steps", type=int, default=None, help="explicit step budget (default: the difficulty profile's)")
+    sw.add_argument("--difficulty", choices=["baseline", "standard", "hard"], default="baseline",
+                    help="difficulty profile: red herrings + default step budget")
     sw.add_argument("--prompt-style", choices=["full", "lean"], default="full")
     sw.add_argument("--token-budget", type=int, default=400_000)
     sw.add_argument("--concurrency", type=int, default=4, help="episodes in flight at once (each is its own world/port)")

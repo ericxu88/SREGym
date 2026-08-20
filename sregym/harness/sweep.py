@@ -62,6 +62,7 @@ class SweepConfig:
     rerun: bool = False  # ignore existing results
     keep_worlds: bool = False
     prompt_style: str = "full"
+    difficulty: str = "baseline"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -200,6 +201,7 @@ def _episode_argv(cfg: SweepConfig, seed: int, ep_dir: Path) -> list[str]:
     argv = [sys.executable, "-m", "sregym.cli", "run", "--seed", str(seed), "--fault", cfg.fault,
             "--agent", cfg.agent, "--max-steps", str(cfg.max_steps), "--token-budget", str(cfg.token_budget),
             "--history-minutes", str(cfg.history_minutes), "--prompt-style", cfg.prompt_style,
+            "--difficulty", cfg.difficulty,
             "--out", str(ep_dir), "--quiet"]
     kw = cfg.agent_kwargs
     if cfg.agent == "anthropic":
@@ -456,6 +458,8 @@ def build_report(sweep_dir: Path) -> tuple[dict[str, Any], str]:
     # every other fault parameter (e.g. lagged, snapshot, commit_variant) -> its own breakdown
     param_keys = sorted({k for r in model_results for k in fp(r) if k not in ("target", "kind", "innocent_change")})
     by_param = {k: breakdown(lambda r, k=k: str(fp(r).get(k, "?"))[:40]) for k in param_keys}
+    if any(r.get("herrings") for r in model_results):
+        by_param["herrings"] = breakdown(lambda r: ",".join(sorted(r.get("herrings", []))) or "none")
 
     def stat(xs: list[float]) -> dict[str, float]:
         if not xs:
@@ -495,7 +499,7 @@ def _render_markdown(s: dict[str, Any]) -> str:
         "",
         f"- generated: {s['generated_at']}  ·  sweep dir: `{s['sweep_dir']}`",
         f"- episodes: **{n}** model results" + (f" (+{s['n_infra_errors']} infra errors, excluded)" if s["n_infra_errors"] else ""),
-        f"- config: max_steps={cfg.get('max_steps')} prompt_style={cfg.get('prompt_style', 'full')} token_budget={cfg.get('token_budget')} history_minutes={cfg.get('history_minutes')} "
+        f"- config: difficulty={cfg.get('difficulty', 'baseline')} max_steps={cfg.get('max_steps')} prompt_style={cfg.get('prompt_style', 'full')} token_budget={cfg.get('token_budget')} history_minutes={cfg.get('history_minutes')} "
         f"concurrency={cfg.get('concurrency')} agent_kwargs={json.dumps(cfg.get('agent_kwargs', {}))}",
         "",
         "## Headline",

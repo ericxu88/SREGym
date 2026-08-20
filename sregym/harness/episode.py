@@ -36,6 +36,7 @@ class EpisodeConfig:
     live_traffic: bool = True
     now: datetime | None = None
     prompt_style: str = "full"  # see harness.prompts.PROMPT_STYLES
+    difficulty: str = "baseline"  # see scenario.PROFILES (red herrings; also the default step budget)
 
 
 @dataclass
@@ -54,6 +55,8 @@ class EpisodeResult:
     agent_summary: str = ""
     hidden_root_cause: str = ""
     fault_params: dict[str, Any] = field(default_factory=dict)  # e.g. target/kind/innocent change (for per-variant reports)
+    difficulty: str = "baseline"
+    herrings: list[str] = field(default_factory=list)
     duration_s: float = 0.0
     error: str | None = None
     infra_error: str | None = None  # environment problem (service failed to start, API outage): result is not a model outcome
@@ -108,7 +111,8 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     root = None
     if config.workdir:
         root = Path(config.workdir) / f"world-seed{config.seed}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S%f}"
-    world, spec = prepare_world(config.seed, config.fault, root=root, now=config.now, history_minutes=config.history_minutes)
+    world, spec = prepare_world(config.seed, config.fault, root=root, now=config.now,
+                                history_minutes=config.history_minutes, difficulty=config.difficulty)
     out_dir = Path(config.out_dir) if config.out_dir else Path("runs") / f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-seed{config.seed}-{agent.name}"
     out_dir.mkdir(parents=True, exist_ok=True)
     traj_path = out_dir / "trajectory.jsonl"
@@ -119,7 +123,8 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     writer = TrajectoryWriter(traj_path)
     writer.write_meta(
         seed=config.seed, fault=config.fault, world_root=str(world.root), world_base=str(world.base), port=world.port, agent=agent.describe(),
-        fault_params=dict(world.extra.get("fault_params", {})),
+        fault_params=dict(world.extra.get("fault_params", {})), difficulty=config.difficulty,
+        herrings=list(world.extra.get("herrings", [])),
         max_steps=config.max_steps, token_budget=config.token_budget, prompt_style=config.prompt_style,
         system_prompt=system_prompt, task_prompt=task_prompt,
         incident=spec.incident.to_dict(), spec=spec.to_dict(), started_at=util.fmt_iso(datetime.now(timezone.utc)),
@@ -215,6 +220,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         verification=verification.to_dict(), stop_reason=stop_reason, steps=len(steps), usage=usage_total,
         trajectory_path=str(traj_path), world_root=str(world.base), agent=agent.describe(), agent_summary=agent_summary,
         hidden_root_cause=spec.incident.root_cause_summary, fault_params=dict(world.extra.get("fault_params", {})),
+        difficulty=config.difficulty, herrings=list(world.extra.get("herrings", [])),
         duration_s=round(time.time() - started, 2), error=error, infra_error=infra_error,
     )
     writer.write_end(stop_reason=stop_reason, reward=verification.reward, success=verification.success,

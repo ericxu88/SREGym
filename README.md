@@ -427,6 +427,24 @@ if the account rejects the beta). `--model claude-opus-5` is the default; `--eff
 
 ---
 
+## Difficulty profiles & red herrings
+
+`--difficulty baseline|standard|hard` (on `run` and `sweep`) bundles the realism-preserving knobs:
+the default step budget (30 / 20 / 12; explicit `--max-steps` still wins) and how many **red herrings**
+the world gets (0 / 2 / 4). Herrings are seeded, template-agnostic, and strictly additive — they add
+plausible noise, never remove real evidence:
+
+- **decoy config deploy** — an innocent recent `.env` commit + deploy with the restart *deferred* (it cannot
+  have caused anything); for no-deploy faults it sits at HEAD, exactly where a "blame the last commit"
+  heuristic looks
+- **decoy cron entry** — a harmless, recently-added maintenance line (fresh file mtime)
+- **bot scan** — a scraper bursting hundreds of 404s from one IP through app and edge logs near the incident
+- **incident-channel chatter** — a `#incidents` excerpt on the page with plausible wrong hypotheses
+  (the promo email, the decoy deploy, credential rotation, the CDN)
+
+`report.md` breaks results down by herring combination. Profiles are the intended calibration instrument:
+budgets and noise live here, not in per-template tweaks.
+
 ## Calibration sweeps
 
 `sregym sweep` runs many seeds through the same agent config, `--concurrency N` at a time
@@ -448,7 +466,7 @@ outages after the SDK's own retries) are retried with backoff and recorded as
 ## CLI
 
 ```
-sregym run       --seed N [--fault env_var_typo] [--agent anthropic|scripted] [--model ID] [--effort ...] [--thinking adaptive|off]
+sregym run       --seed N [--difficulty baseline|standard|hard] [--fault env_var_typo] [--agent anthropic|scripted] [--model ID] [--effort ...] [--thinking adaptive|off]
                  [--max-steps 30] [--token-budget 400000] [--history-minutes 180] [--workdir DIR] [--keep-world]
                  [--out DIR] [--no-traffic] [--mode solve|mask|workaround|noop|sloppy] [--quiet]
 sregym verify    --world DIR [--trajectory FILE] [--start-service] [--json]
@@ -466,7 +484,7 @@ Runs go to `runs/<timestamp>-seed<seed>-<agent>/{trajectory.jsonl,result.json,pr
 
 ```
 sregym/
-  generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning)
+  generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning) · herrings.py
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
   faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py
