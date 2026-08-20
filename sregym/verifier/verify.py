@@ -324,6 +324,16 @@ class Verifier:
             return True, describe or f"{file} matches {pattern!r}"
         return False, (describe + ": " if describe else "") + f"{file} does not match {pattern!r}"
 
+    def check_file_not_matches(self, file: str, pattern: str, describe: str = "") -> tuple[bool, str]:
+        """A text file must NOT match a regex (e.g. a bad config line was removed). A missing file
+        trivially does not match."""
+        p = self.world.root / file
+        if not p.exists():
+            return True, describe or f"{file} absent (nothing matches {pattern!r})"
+        if re.search(pattern, p.read_text()):
+            return False, (describe + ": " if describe else "") + f"{file} still matches {pattern!r}"
+        return True, describe or f"{file} does not match {pattern!r}"
+
     def check_dirs_equal(self, a: str, b: str, describe: str = "") -> tuple[bool, str]:
         """Two directory trees must be byte-identical (e.g. the installed package equals its wheelhouse copy --
         hand-editing installed artifacts is not a fix)."""

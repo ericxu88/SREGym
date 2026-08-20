@@ -37,6 +37,8 @@ Key settings:
 #]] ledger
 - `LOG_PATH` / `LOG_LEVEL` – application log destination
 - `RATE_LIMIT_PER_MINUTE` – per-user checkout rate limit
+- `DATABASE_MAX_PAGES` – optional size cap for the core database, in SQLite pages
+  (unset or `0` = unlimited); writes beyond the cap fail with *database or disk is full*
 #[[ checkout
 - `PAYMENT_GATEWAY_*` – gateway endpoint/timeout; `PAYMENT_GATEWAY_MODE=stub` authorizes locally
 - `CART_TTL_MINUTES` – abandoned-cart expiry used by `scripts/expire_carts.py`

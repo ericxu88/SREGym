@@ -33,6 +33,9 @@ def _connect(url: str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=settings.db_timeout_seconds)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    if settings.database_max_pages and url == settings.database_url:
+        # capacity guardrail: cap growth of the core database (DATABASE_MAX_PAGES, in SQLite pages)
+        conn.execute("PRAGMA max_page_count = %d" % settings.database_max_pages)
     return conn
 
 

@@ -114,7 +114,7 @@ def render_system_file(name: str, values: dict[str, str]) -> str:
 # (comment header, [keys...]) -- keys missing from the state are skipped.
 ENV_LAYOUT: list[tuple[str, list[str]]] = [
     ("# --- application", ["APP_NAME", "APP_ENV", "APP_HOST", "APP_PORT"]),
-    ("# --- databases", ["DATABASE_URL", "LEDGER_DATABASE_URL", "DATABASE_TIMEOUT_SECONDS"]),
+    ("# --- databases", ["DATABASE_URL", "LEDGER_DATABASE_URL", "DATABASE_TIMEOUT_SECONDS", "DATABASE_MAX_PAGES"]),
     ("# --- payments", ["PAYMENT_GATEWAY_URL", "PAYMENT_GATEWAY_TIMEOUT_MS", "PAYMENT_GATEWAY_MODE", "CART_TTL_MINUTES"]),
     ("# --- logging", ["LOG_PATH", "LOG_LEVEL"]),
     ("# --- limits", ["RATE_LIMIT_PER_MINUTE"]),

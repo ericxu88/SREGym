@@ -24,6 +24,7 @@ DEFAULTS: dict[str, str] = {
     "LEDGER_DATABASE_URL": "sqlite:///data/ledger-dev.db",
     #]] ledger
     "DATABASE_TIMEOUT_SECONDS": "5",
+    "DATABASE_MAX_PAGES": "0",
     "SLOW_QUERY_MS": "500",
     #[[ checkout
     "PAYMENT_GATEWAY_URL": "https://sandbox.payments.example.com/v2",
@@ -70,6 +71,7 @@ class Settings:
     ledger_database_url: str
     #]] ledger
     db_timeout_seconds: float
+    database_max_pages: int
     slow_query_ms: int
     #[[ checkout
     payment_gateway_url: str
@@ -108,6 +110,7 @@ def _load() -> tuple[Settings, dict[str, str], list[str]]:
         ledger_database_url=values["LEDGER_DATABASE_URL"],
         #]] ledger
         db_timeout_seconds=float(values["DATABASE_TIMEOUT_SECONDS"]),
+        database_max_pages=int(values["DATABASE_MAX_PAGES"] or 0),
         slow_query_ms=int(values["SLOW_QUERY_MS"]),
         #[[ checkout
         payment_gateway_url=values["PAYMENT_GATEWAY_URL"],
