@@ -1,0 +1,39 @@
+only_setup = false
+only_gold = false
+num_tasks = 2
+shuffle = false
+max_concurrent = 128
+verbose = false
+rich = true
+
+[taskset]
+id = "sregym-env"
+faults = "env_var_typo"
+difficulty = "baseline"
+stack = "auto"
+seed_start = 1
+max_steps = 0
+history_minutes = 40
+
+[taskset.task]
+judges = []
+
+[taskset.task.tools]
+colocated = false
+keep_world = false
+traffic_rps = 1.5
+live_traffic = true
+
+[taskset.task.tools.runtime]
+type = "subprocess"
+
+[runtime]
+allow = [
+    "*",
+]
+block = []
+type = "docker"
+image = "python:3.11-slim"
+workdir = "/app"
+
+[timeout]

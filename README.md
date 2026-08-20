@@ -591,6 +591,40 @@ outages after the SDK's own retries) are retried with backoff and recorded as
 - breakdown by fault variant (env var × typo kind, innocent co-change), steps/tokens/
   duration/cost per episode, and a triage table of failed seeds with the hidden root cause
 
+## Verifiers taskset (RL / evals via Prime Intellect's `verifiers`)
+
+`environments/sregym_env` packages SREGym as a native [verifiers](https://github.com/PrimeIntellect-ai/verifiers)
+v1 taskset — **infinite** (procedural seeds; bound runs with `-n`), deterministically verified, ready for
+`eval` and for RL training through prime-rl. Live-tested end to end: a real model, driven by verifiers'
+own harness over MCP, resolved a generated incident at reward 1.0.
+
+- **One task = one incident.** `load()` builds the world once to render its page + a portable system
+  prompt (no host paths/ports — everything is discoverable in-world), then discards it. Each rollout's
+  tool server rebuilds an identical world from `(seed, fault, stack, now)` on its own port, so `-r > 1`
+  rollouts are isolated. Durable task identity: `key = <fault>-s<seed>-<difficulty>-<stack>`.
+- **The sandbox is the interface.** One MCP tool server per rollout owns the live world (service,
+  traffic, metrics, cron) and exposes exactly the SREGym toolset — same pagination, same allow-listed
+  shell, same structural forbidden-action judging. The taskset's default harness is a **null-based tool
+  loop** (`SREGymHarness`): no bash tool, no host filesystem. Don't pair it with a shell-bearing harness;
+  that would bypass the sandbox the scoring is built on.
+- **Deterministic reward, verified live.** Verification runs *in the tool server while the service is
+  up* — at `resolve_incident` or when the step budget is spent — and the verdict rides the rollout state
+  into `@vf.reward`/`@vf.metric` (components: symptom/root-cause/collateral/steps). If a model abandons
+  the incident mid-budget, `finalize` scores the leftover world offline (an abandoned incident is not a
+  restored service). A compact verdict (failed checks, hidden root cause, step list) lands in `trace.info`.
+
+```bash
+pip install -e ".[verifiers]" && pip install --no-deps -e environments/sregym_env
+validate sregym-env -n 2                       # model-free wiring check
+eval sregym-env -n 5 -m <model> --no-push \
+  --client.base-url <openai-compatible-url> --client.api-key-var <KEY_VAR> \
+  --env.taskset.difficulty standard --env.taskset.faults all
+# config knobs: --env.taskset.{faults,difficulty,stack,seed-start,max-steps,history-minutes}
+```
+
+(Anthropic's OpenAI-compatible endpoint works directly: `--client.base-url https://api.anthropic.com/v1
+--client.api-key-var ANTHROPIC_API_KEY`.)
+
 ## CLI
 
 ```

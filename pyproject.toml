@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-timeout>=2.3"]
+verifiers = ["verifiers>=0.3.0"]  # the v1 taskset package in environments/sregym_env (py>=3.11)
 
 [project.scripts]
 sregym = "sregym.cli:main"

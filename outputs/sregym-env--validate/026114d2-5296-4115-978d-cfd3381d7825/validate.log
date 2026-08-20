@@ -1,0 +1,6 @@
+19:00:22    INFO validating 2/2 task(s) from sregym-env on the docker runtime (gold+setup)
+19:00:22    INFO results: outputs/sregym-env--validate/026114d2-5296-4115-978d-cfd3381d7825
+19:01:37    INFO docker: started container validate-gold-1-a79f8dae (image=python:3.11-slim)
+19:01:37    INFO docker: started container validate-setup-1-da36fdba (image=python:3.11-slim)
+19:01:37    INFO docker: started container validate-gold-2-0baa06c1 (image=python:3.11-slim)
+19:01:38    INFO docker: started container validate-setup-2-0b9c7d86 (image=python:3.11-slim)

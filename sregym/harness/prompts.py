@@ -62,6 +62,26 @@ def build_task_prompt(world: World, incident: IncidentProfile, seed: int | None 
     return page
 
 
+PORTABLE_ENV_LINES = """Environment (single host; your tools operate on it):
+- Service repo / working directory: {service}/ under the host root (a git repo; the service runs from there).
+- The service is a FastAPI app run by uvicorn as a local process on 127.0.0.1; its port is APP_PORT in {service}/.env (curl http://127.0.0.1:<port>/... to reach it directly).
+- Host layout: {service}/ (repo, logs/, data/), etc/ (nginx, systemd, cron config), var/log/nginx/, metrics/.
+- Every path you pass to a tool is relative to the host root."""
+
+
+def build_portable_system_prompt(world: World, max_steps: int, style: str = "lean") -> str:
+    """System prompt for externally-driven harnesses (e.g. the verifiers taskset): identical
+    on-call framing, but no absolute host paths or ports — everything the agent needs is
+    discoverable through the tools, so the prompt is stable across per-rollout worlds."""
+    template = LEAN_SYSTEM_PROMPT if style == "lean" else SYSTEM_PROMPT
+    body = template.format(company=world.company, repo="{repo}", port="{port}", root="{root}",
+                           max_steps=max_steps, service=world.naming.service)
+    # swap the host-specific environment block for the portable one
+    start = body.index("Environment (single host")
+    end = body.index("\n\nTools:")
+    return body[:start] + PORTABLE_ENV_LINES.format(service=world.naming.service) + body[end:]
+
+
 def page_footer(world: World) -> str:
     return (f"Current time is {util.fmt_iso(world.now)} (all timestamps UTC). Investigate, mitigate, and fix the root cause. "
             "Call resolve_incident when done.")

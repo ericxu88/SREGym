@@ -1,0 +1,31 @@
+{
+  "checks": {
+    "gold": {
+      "error": 0,
+      "invalid": 0,
+      "missing": 0,
+      "timeout": 0,
+      "valid": 2
+    },
+    "setup": {
+      "error": 0,
+      "invalid": 0,
+      "missing": 0,
+      "timeout": 0,
+      "valid": 2
+    }
+  },
+  "mode": "all",
+  "outcomes": {
+    "error": 0,
+    "invalid": 0,
+    "missing": 0,
+    "timeout": 0,
+    "valid": 2
+  },
+  "owed": 0,
+  "recorded": 2,
+  "terminal": 2,
+  "total": 2,
+  "valid_rate": 1.0
+}
