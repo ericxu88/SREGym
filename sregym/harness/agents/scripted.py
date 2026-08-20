@@ -41,7 +41,13 @@ class ScriptedAgent(AgentAdapter):
     def start(self, system_prompt: str, task_prompt: str, tool_specs: list[dict[str, Any]]) -> None:
         m = re.search(r"http://127\.0\.0\.1:(\d+)", system_prompt)
         self.port = int(m.group(1)) if m else None
-        self._gen = self._script_ledger() if "ledger" in task_prompt.lower() else self._script()
+        task = task_prompt.lower()
+        if "connection refused" in task or "no healthy upstream" in task or "down hard" in task:
+            self._gen = self._script_crashloop()
+        elif "ledger" in task:
+            self._gen = self._script_ledger()
+        else:
+            self._gen = self._script()
         self._pending = None
 
     def next_turn(self) -> AgentTurn:
@@ -78,6 +84,46 @@ class ScriptedAgent(AgentAdapter):
             bad = max(candidates, key=lambda a: difflib.SequenceMatcher(None, a, good).ratio())
             return bad, good
         return None
+
+    # ------------------------------------------------------------------ dead service / crash loop script
+    def _script_crashloop(self) -> Generator[ToolCall, ToolResult | None, None]:
+        base = f"http://127.0.0.1:{self.port}"
+        self.notes.append("Full outage with connection refused: the process is down. Checking its last words and the deploy trail.")
+        yield self._call("run_shell", command=f"curl -s -m 3 {base}/health; echo exit=$?")
+        tail = yield self._call("read_logs", path=f"{REPO}/logs/app.log", tail=True, limit=25)
+        yield self._call("read_logs", path=f"{REPO}/logs/deploy.log", tail=True, limit=10)
+        if self.mode == "mask":
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Restarted.", root_cause="transient")
+            return
+        content = tail.content if tail else ""
+        m = re.search(r"ImportError: cannot import name '(\w+)' from '(\w+)'", content)
+        if not m:
+            yield self._call("resolve_incident", summary="Could not find the crash cause.", root_cause="unknown")
+            return
+        symbol, pkg = m.group(1), m.group(2)
+        yield self._call("run_shell", command=f"git -C {REPO} log --oneline -3; git -C {REPO} show HEAD")
+        yield self._call("run_shell", command=f"cat {REPO}/requirements.txt; ls {REPO}/vendor/wheels")
+        if self.mode == "workaround":
+            self.notes.append(f"Adding {symbol} back to the installed package in lib/.")
+            yield self._call("edit_file", path=f"{REPO}/lib/{pkg}/__init__.py",
+                             old_string='__version__ = "3.0.0"',
+                             new_string=f'__version__ = "3.0.0"\n\n\ndef {symbol}(mapping) -> str:\n    return " ".join(f"{{k}}={{v}}" for k, v in dict(mapping).items())')
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary=f"Re-added {symbol} to the installed package.", root_cause="bad dep")
+            return
+        self.notes.append(f"The deploy pinned {pkg} to a version that removed {symbol}(); restoring the previous pin and reinstalling.")
+        yield self._call("edit_file", path=f"{REPO}/requirements.txt", old_string=f"{pkg}==3.0.0", new_string=f"{pkg}==2.1.0")
+        yield self._call("run_shell", command=f"python {REPO}/scripts/deploy_deps.py")
+        if self.mode == "sloppy":
+            yield self._call("edit_file", path=f"{REPO}/README.md", old_string="# checkout-service", new_string="# checkout-service (fixed)")
+        yield self._call("restart_service")
+        yield self._call("run_shell", command=f"curl -s {base}/health")
+        yield self._call("resolve_incident",
+                         summary=(f"Release at HEAD bumped {pkg} to 3.0.0, whose API removed {symbol}(); the service crashed at import "
+                                  "on restart and hit the start limit, taking the site down. Restored the 2.1.0 pin, reinstalled from "
+                                  "the wheelhouse with scripts/deploy_deps.py, and restarted; health and checkouts are green."),
+                         root_cause="dependency pin bumped to an incompatible version")
 
     # ------------------------------------------------------------------ db file permissions script
     def _script_permissions(self) -> Generator[ToolCall, ToolResult | None, None]:

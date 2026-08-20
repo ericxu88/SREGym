@@ -7,8 +7,11 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, "lib")  # internal packages installed by scripts/deploy_deps.py (run from the repo root)
 
 import uvicorn
 

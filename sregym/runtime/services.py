@@ -60,9 +60,28 @@ class ServiceManager:
             pass
 
     # ------------------------------------------------------------------ lifecycle
+    START_LIMIT = 5  # like systemd: Restart=on-failure with a burst limit, then give up
+
     def start(self, wait: bool = True, timeout: float = 15.0, announce: bool = True) -> str:
+        """Start the service; if it exits immediately, retry up to START_LIMIT times (crash-loop), then fail."""
         if self.is_running():
             return f"{SERVICE_NAME} is already running (pid {self.pid})"
+        last = ""
+        for attempt in range(1, self.START_LIMIT + 1):
+            last = self._start_once(wait=wait, timeout=timeout, announce=announce and attempt == 1)
+            if "exited immediately" not in last:
+                if attempt > 1:
+                    last += f" (after {attempt} attempts)"
+                return last
+            self._log_event(f"{SERVICE_NAME} exited with code {self.proc.returncode if self.proc else '?'} "
+                            f"(attempt {attempt}/{self.START_LIMIT}); restarting in 2s")
+            time.sleep(0.4)
+        self._log_event(f"{SERVICE_NAME}: start limit exceeded ({self.START_LIMIT} rapid failures); giving up (Result: start-limit-hit)")
+        return (f"{SERVICE_NAME} failed to start: crashed {self.START_LIMIT} times in a row "
+                f"(last exit code {self.proc.returncode if self.proc else '?'}); start limit exceeded. "
+                f"See {util.relpath(self.world.app_log, self.world.root)} for the crash output.")
+
+    def _start_once(self, wait: bool = True, timeout: float = 15.0, announce: bool = True) -> str:
         world = self.world
         world.log_dir.mkdir(parents=True, exist_ok=True)
         env = {
@@ -92,6 +111,7 @@ class ServiceManager:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
+                time.sleep(0.15)  # let the crash output finish flushing to the log
                 return (f"{SERVICE_NAME} exited immediately with code {self.proc.returncode} "
                         f"(see {util.relpath(world.app_log, world.root)})")
             if util.port_open(world.port):
@@ -139,9 +159,12 @@ class ServiceManager:
         pid = self.pid
         lines = [f"● {SERVICE_NAME} - checkout-service (FastAPI/uvicorn)"]
         if pid is None:
-            lines.append("   Active: inactive (dead)")
-            if self.proc is not None and self.proc.returncode is not None:
+            if self.proc is not None and self.proc.returncode not in (None, 0, -15):
+                lines.append("   Active: failed (Result: start-limit-hit)" if self.events and "start limit" in self.events[-1]
+                             else "   Active: failed")
                 lines.append(f"   Last exit code: {self.proc.returncode}")
+            else:
+                lines.append("   Active: inactive (dead)")
         else:
             up = (datetime.now(timezone.utc) - self.started_at).total_seconds() if self.started_at else 0
             lines.append(f"   Active: active (running) since {self.started_at:%Y-%m-%d %H:%M:%S} UTC; {int(up)}s ago")

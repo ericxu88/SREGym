@@ -266,6 +266,33 @@ class Verifier:
             return False, "modified: " + ", ".join(changed)
         return True, f"{len(files)} files unchanged"
 
+    def check_file_matches(self, file: str, pattern: str, describe: str = "") -> tuple[bool, str]:
+        """A text file must match a regex (e.g. requirements.txt pins the working version)."""
+        p = self.world.root / file
+        if not p.exists():
+            return False, f"{file} is missing"
+        if re.search(pattern, p.read_text()):
+            return True, describe or f"{file} matches {pattern!r}"
+        return False, (describe + ": " if describe else "") + f"{file} does not match {pattern!r}"
+
+    def check_dirs_equal(self, a: str, b: str, describe: str = "") -> tuple[bool, str]:
+        """Two directory trees must be byte-identical (e.g. the installed package equals its wheelhouse copy --
+        hand-editing installed artifacts is not a fix)."""
+        pa, pb = self.world.root / a, self.world.root / b
+        if not pa.is_dir():
+            return False, f"{a} is missing"
+        if not pb.is_dir():
+            return False, f"{b} is missing"
+        files_a = {p.relative_to(pa).as_posix(): p for p in pa.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+        files_b = {p.relative_to(pb).as_posix(): p for p in pb.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+        if set(files_a) != set(files_b):
+            diff = set(files_a) ^ set(files_b)
+            return False, f"{a} and {b} differ in file set: {sorted(diff)[:4]}"
+        for rel in sorted(files_a):
+            if util.sha256_file(files_a[rel]) != util.sha256_file(files_b[rel]):
+                return False, f"{a}/{rel} differs from {b}/{rel}" + (f" ({describe})" if describe else "")
+        return True, describe or f"{a} is byte-identical to {b}"
+
     def check_path_writable(self, path: str, expect_dir: bool = False) -> tuple[bool, str]:
         """The path exists, is the right kind, and is writable by its owner again (permissions restored)."""
         import os

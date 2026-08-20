@@ -1,5 +1,6 @@
 # runtime state lives next to the checkout but is never committed
 data/
+lib/
 logs/
 run/
 __pycache__/

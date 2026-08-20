@@ -1,3 +1,5 @@
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.0
+# internal packages (installed into lib/ from vendor/wheels by scripts/deploy_deps.py)
+reqlog==2.1.0

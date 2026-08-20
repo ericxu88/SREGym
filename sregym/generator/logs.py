@@ -319,6 +319,29 @@ def _restart_sequence(sim: _Sim, restart_at: datetime, commit_sha: str, version:
     return down_from, restart_at + timedelta(milliseconds=30)
 
 
+def _crash_loop_sequence(sim: _Sim, incident: IncidentProfile, version: str, old_pid: int, rng: random.Random) -> None:
+    """Shutdown of the old process, then START_LIMIT crash attempts: a formatted 'starting' line followed by the
+    raw (untimestamped) crash output, exactly as an uncaught startup exception lands in the log file."""
+    t = incident.restart_at - timedelta(seconds=2.6)
+    seq = [
+        (t, "INFO", "uvicorn.error", "Shutting down"),
+        (t + timedelta(milliseconds=103), "INFO", "uvicorn.error", "Waiting for application shutdown."),
+        (t + timedelta(milliseconds=104), "INFO", "uvicorn.error", "Application shutdown complete."),
+        (t + timedelta(milliseconds=105), "INFO", "uvicorn.error", f"Finished server process [{old_pid}]"),
+    ]
+    for ts, level, logger, msg in seq:
+        sim.events.append(_Event(ts, [_fmt(ts, level, logger, msg)], sim.next_seq()))
+    crash_raw = incident.extra.get("crash_output", "").rstrip("\n")
+    at = incident.restart_at
+    for attempt in range(5):
+        pid = rng.randint(30001, 60000)
+        lines = [_fmt(at, "INFO", "checkout.serve", f"starting {SERVICE_NAME} {version} (commit {incident.deploy_commit[:7]}) pid={pid}")]
+        if crash_raw:
+            lines.extend(crash_raw.splitlines())
+        sim.events.append(_Event(at, lines, sim.next_seq()))
+        at += timedelta(seconds=2 + rng.uniform(0.1, 0.5))
+
+
 def _poisson(rng: random.Random, lam: float) -> int:
     L = math.exp(-lam)
     k, p = 0, 1.0
@@ -349,7 +372,12 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     slow_end = slow_start + timedelta(minutes=rng.uniform(2, 4)) if slow_start else None
 
     gap: tuple[datetime, datetime] | None = None
-    if incident and not incident.extra.get("no_restart"):
+    if incident and incident.extra.get("service_dead"):
+        # the restart after the deploy crash-loops and never comes back: outage from restart to now
+        old_pid = rng.randint(2000, 30000)
+        _crash_loop_sequence(sim, incident, version, old_pid, rng)
+        gap = (incident.restart_at - timedelta(seconds=2.6), end)
+    elif incident and not incident.extra.get("no_restart"):
         old_pid, new_pid = rng.randint(2000, 30000), rng.randint(30001, 60000)
         gap = _restart_sequence(sim, incident.restart_at, incident.deploy_commit, version, n_keys,
                                 incident.config_warnings, old_pid, new_pid)
@@ -402,9 +430,13 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     ledger_times = sorted(sim.ledger_payment_times)
     minute = start.replace(second=0, microsecond=0)
     while minute < end:
-        up = 1.0
-        if gap and minute <= gap[0] < minute + timedelta(minutes=1):
+        minute_end = minute + timedelta(minutes=1)
+        if gap and gap[0] <= minute and min(minute_end, end) <= gap[1]:
+            up = 0.0
+        elif gap and minute <= gap[0] < minute_end:
             up = 0.75
+        else:
+            up = 1.0
         _bump_metric(sim, minute, "up", {}, up)
         minute_end = minute + timedelta(minutes=1)
         n = bisect.bisect_left(ledger_times, minute_end)
@@ -456,7 +488,8 @@ def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: rando
         for d in custom:
             restart_at = incident.restart_at if d.get("restart") == "restart" else None
             lines += _deploy_lines(util.parse_iso(d["when"]), d["sha"], d["author"], d["message"], config_only=bool(d.get("config_only")),
-                                   rng=rng, restart_at=restart_at, restart=d.get("restart", "restart"))
+                                   rng=rng, restart_at=restart_at, restart=d.get("restart", "restart"),
+                                   deps_line=d.get("deps_line"), crashed=bool(d.get("crashed")))
     elif incident and custom is None:
         lines += _deploy_lines(incident.deploy_at, incident.deploy_commit[:7], incident.deploy_author, incident.deploy_message,
                                config_only=True, rng=rng, restart_at=incident.restart_at)
@@ -464,7 +497,8 @@ def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: rando
 
 
 def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_only: bool, rng: random.Random,
-                  restart_at: datetime | None = None, restart: str = "restart") -> list[str]:
+                  restart_at: datetime | None = None, restart: str = "restart", deps_line: str | None = None,
+                  crashed: bool = False) -> list[str]:
     tag = f"[{SERVICE_NAME}]"
     t = when
     out = [f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy {sha} requested by {author} ({message})"]
@@ -475,7 +509,7 @@ def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_on
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} shipping .env (1 file changed)")
     else:
         t += timedelta(seconds=rng.uniform(4, 12))
-        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} pip install -r requirements.txt ... up to date")
+        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deps: python scripts/deploy_deps.py ... {deps_line or 'reqlog==2.1.0 installed (no change)'}")
         t += timedelta(seconds=rng.uniform(0.5, 1.5))
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} db migrations: not run by deploy-bot (manual step, see runbook)")
     if restart == "deferred":
@@ -485,6 +519,13 @@ def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_on
         return out
     t = restart_at - timedelta(seconds=2.7) if restart_at else t + timedelta(seconds=rng.uniform(1, 2))
     out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} restarting service (systemctl restart {SERVICE_NAME})")
+    if crashed:
+        t = (restart_at or t) + timedelta(seconds=rng.uniform(12, 16))
+        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} ERROR: service did not become active within 10s "
+                   f"(systemctl reports: activating (auto-restart) -> failed, Result: start-limit-hit)")
+        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy FAILED after {int((t - when).total_seconds())}s; "
+                   f"manual intervention required (deploy-bot does not auto-roll-back)")
+        return out
     t = restart_at + timedelta(seconds=rng.uniform(1.5, 3)) if restart_at else t + timedelta(seconds=rng.uniform(2, 4))
     out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} service active (pid {rng.randint(2000, 60000)})")
     out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy complete in {int((t - when).total_seconds())}s")

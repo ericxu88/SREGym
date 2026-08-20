@@ -66,15 +66,19 @@ class EpisodeResult:
 class LiveWorld:
     """Runs the service, synthetic traffic and the metrics collector for a world."""
 
-    def __init__(self, world: World, traffic_rps: float = 1.5, live_traffic: bool = True):
+    def __init__(self, world: World, traffic_rps: float = 1.5, live_traffic: bool = True, start_service: bool = True):
         self.world = world
+        self.start_service = start_service  # False for incidents where the service is down/crash-looping at page time
         self.services = ServiceManager(world)
         self.traffic = TrafficGenerator(world, rps=traffic_rps) if live_traffic else None
         self.collector = MetricsCollector(world)
         self.cron = CronRunner(world)  # runs etc/cron.d jobs (deployed repo scripts only)
 
     def start(self) -> str:
-        msg = self.services.start(announce=False)  # in the fiction the process has been up since the deploy
+        if self.start_service:
+            msg = self.services.start(announce=False)  # in the fiction the process has been up since the deploy
+        else:
+            msg = f"{self.world.base_url} is down (the incident took the service out; traffic is getting 502s)"
         self.collector.start()
         self.cron.start()
         if self.traffic:
@@ -120,7 +124,9 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         system_prompt=system_prompt, task_prompt=task_prompt,
         incident=spec.incident.to_dict(), spec=spec.to_dict(), started_at=util.fmt_iso(datetime.now(timezone.utc)),
     )
-    live = LiveWorld(world, traffic_rps=config.traffic_rps, live_traffic=config.live_traffic)
+    service_dead = bool(spec.incident.extra.get("service_dead"))
+    live = LiveWorld(world, traffic_rps=config.traffic_rps, live_traffic=config.live_traffic,
+                     start_service=not service_dead)
     ctx = ToolContext(world, live.services)
     steps: list[Step] = []
     usage_total = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
@@ -133,7 +139,7 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         print(f"[sregym] hidden root cause: {spec.incident.root_cause_summary}")
     try:
         start_msg = live.start()
-        if "listening" not in start_msg:
+        if not service_dead and "listening" not in start_msg:
             infra_error = f"service did not start: {start_msg}"
             raise RuntimeError(infra_error)
         agent.start(system_prompt, task_prompt, registry.specs())

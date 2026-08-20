@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from reqlog import kv
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -117,7 +118,7 @@ async def observe_requests(request: Request, call_next):  # type: ignore[no-unty
     route = request.scope.get("route")
     path_template = getattr(route, "path", request.url.path)
     telemetry.observe_request(request.method, path_template, response.status_code, duration_ms)
-    extra = " ".join(f"{k}={v}" for k, v in request.state.log_extra.items())
+    extra = kv(request.state.log_extra)
     msg = f"req={req_id} {request.method} {request.url.path} {response.status_code} {duration_ms:.0f}ms"
     if extra:
         msg += " " + extra

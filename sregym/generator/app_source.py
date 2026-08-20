@@ -42,6 +42,9 @@ _APP_FILES = {
     "migrations/001_init.sql": "migrations/001_init.sql",
     "scripts/migrate.py": "scripts/migrate.py",
     "scripts/archive_orders.py": "scripts/archive_orders.py",
+    "scripts/deploy_deps.py": "scripts/deploy_deps.py",
+    "vendor/wheels/reqlog-2.1.0/reqlog/__init__.py": "vendor/wheels/reqlog-2.1.0/reqlog/__init__.py",
+    "vendor/wheels/reqlog-3.0.0/reqlog/__init__.py": "vendor/wheels/reqlog-3.0.0/reqlog/__init__.py",
 }
 # files that only exist once a section exists
 _SECTION_FILES = {
@@ -95,6 +98,8 @@ def render_app_files(sections: frozenset[str] | set[str], values: dict[str, str]
     for tmpl_rel, repo_rel in mapping.items():
         text = (APP_TEMPLATE_DIR / tmpl_rel).read_text()
         files[repo_rel] = substitute(render_sections(text, sections), values)
+    # the installed copy of the internal package (gitignored on disk, like data/): provisioned to match the pin
+    files["lib/reqlog/__init__.py"] = files["vendor/wheels/reqlog-2.1.0/reqlog/__init__.py"]
     return files
 
 
