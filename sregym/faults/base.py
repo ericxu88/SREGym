@@ -167,14 +167,27 @@ def register(cls: type[FaultTemplate]) -> type[FaultTemplate]:
 
 def get_fault(name: str) -> FaultTemplate:
     _ensure_loaded()
+    if name.startswith("composed"):
+        from sregym.faults.composed import PAIRS, ComposedFault
+
+        if name == "composed":
+            return ComposedFault()
+        pair = name.split(":", 1)[1]
+        if pair not in PAIRS:
+            raise KeyError(f"unknown composed pair {pair!r}; available: {sorted(PAIRS)}")
+        return ComposedFault(pair)
     if name not in _REGISTRY:
-        raise KeyError(f"unknown fault template {name!r}; available: {sorted(_REGISTRY)}")
+        raise KeyError(f"unknown fault template {name!r}; available: {sorted(_REGISTRY)} (+ composed[:pair])")
     return _REGISTRY[name]()
 
 
 def list_faults() -> dict[str, str]:
     _ensure_loaded()
-    return {name: cls.description for name, cls in sorted(_REGISTRY.items())}
+    from sregym.faults.composed import PAIRS
+
+    out = {name: cls.description for name, cls in sorted(_REGISTRY.items())}
+    out["composed"] = "Two independent faults, one page (seed picks a vetted pair; or composed:" + "|".join(sorted(PAIRS)) + ")"
+    return out
 
 
 def _ensure_loaded() -> None:

@@ -366,6 +366,17 @@ per-user value (≥ 60 accepted — the intended 100 and the old 600 both pass) 
 limiter code is a workaround. Symptom verification is a **burst probe** (`http_burst`): 6 rapid checkouts
 by one user must all return 201.
 
+**Fault composition** (`--fault composed` or `composed:<pair>`): two independent faults in one world — a
+deploy-borne one and an environmental one — with one page (the first alert that fired, plus the second
+stacked onto it as "ALSO TRIGGERED"). Vetted pairs: `migration+perms` (with a real causal ordering — the
+migration cannot be applied until the write bit is restored), `ratelimit+perms` (one endpoint interleaves
+429 bursts and readonly 500s), `migration+cron` (steady 500s on one endpoint family, minute-aligned lock
+bursts on another). Each member keeps its own incident clock (per-endpoint failure start times); profiles,
+evidence trails and verification specs merge, with member-prefixed check names so reports show partial
+progress. Merge rule learned in testing: one member's "file unchanged" workaround-detector is shrunk by the
+sibling's allowed-changed files — otherwise fixing fault A correctly would veto fault B's required fix.
+Reward stays all-or-nothing: both root causes coherently fixed, all probes green, no collateral.
+
 ### Verifier & reward
 
 Deterministic, no LLM (`sregym/verifier/verify.py`), run against the *live* world at the
@@ -499,7 +510,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning) · herrings.py
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py · composed.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector) · cron.py (cron daemon)

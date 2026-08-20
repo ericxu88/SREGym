@@ -260,17 +260,29 @@ def _checkout_attempt(sim: _Sim, ts: datetime, user_id: int, failing: bool, core
     _record_request(sim, ts, "POST", "/checkout", "/checkout", status, latency, extra, error, tb_key, warn_lines)
 
 
+def _endpoint_state(sim: _Sim, ts: datetime, key: str) -> tuple[bool, dict | None]:
+    """(failing, error_override) for an endpoint at a time. Each endpoint override may carry its own
+    ``since`` (composed faults start at different times); the lock burst may be scoped to ``endpoints``."""
+    inc = sim.incident
+    if not inc or key not in inc.failing_endpoints:
+        return False, None
+    override = (inc.extra.get("endpoint_errors") or {}).get(key)
+    since = util.parse_iso(override["since"]) if override and override.get("since") else inc.incident_at
+    failing = ts >= since
+    burst = inc.extra.get("lock_burst")
+    if failing and burst and key in burst.get("endpoints", inc.failing_endpoints):
+        burst_since = util.parse_iso(burst["since"]) if burst.get("since") else inc.incident_at
+        phase = (ts - burst_since).total_seconds() % float(burst["period_s"])
+        failing = burst["offset_s"] <= phase < burst["offset_s"] + burst["duration_s"]
+    return failing, (override if failing else None)
+
+
 def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
     rng, inc = sim.rng, sim.incident
     method, template = tp.pick_endpoint(rng)
     key = f"{method} {template}"
-    failing = bool(inc) and ts >= inc.incident_at and key in inc.failing_endpoints
-    burst = inc.extra.get("lock_burst") if inc else None
-    if failing and burst:  # intermittent: only while the periodic job holds the lock
-        phase = (ts - inc.incident_at).total_seconds() % float(burst["period_s"])
-        failing = burst["offset_s"] <= phase < burst["offset_s"] + burst["duration_s"]
+    failing, override = _endpoint_state(sim, ts, key)
     core_broken = bool(inc) and inc.broken_db == "core"
-    override = (inc.extra.get("endpoint_errors") or {}).get(key) if failing else None  # {"error":..., "tb":..., "latency_ms":...}
     slow = slow_window and template != "/checkout" and rng.random() < 0.4
     latency = tp.latency_ms(rng, template, slow=slow)
     warn = [f"slow database transaction ({latency:.0f}ms) db=core"] if slow else None
@@ -287,11 +299,7 @@ def _simulate_request(sim: _Sim, ts: datetime, slow_window: bool) -> None:
                 burst_at += timedelta(seconds=rng.uniform(1.2, 9.0))
                 if burst_at >= sim.world.now:
                     break
-                b_failing = bool(inc) and burst_at >= inc.incident_at and key in inc.failing_endpoints
-                if b_failing and burst:
-                    phase = (burst_at - inc.incident_at).total_seconds() % float(burst["period_s"])
-                    b_failing = burst["offset_s"] <= phase < burst["offset_s"] + burst["duration_s"]
-                b_override = (inc.extra.get("endpoint_errors") or {}).get(key) if b_failing else None
+                b_failing, b_override = _endpoint_state(sim, burst_at, key)
                 _checkout_attempt(sim, burst_at, user_id, b_failing, core_broken, b_override, slow_window)
         return
     elif template == "/orders/{order_id}":
@@ -602,13 +610,14 @@ def _write_cron_log(world: World, incident: IncidentProfile | None, rng: random.
         t += timedelta(minutes=15)
     burst = incident.extra.get("lock_burst") if incident else None
     if burst:
-        reload_at = incident.incident_at - timedelta(seconds=rng.uniform(20, 70))
+        reload_at = (util.parse_iso(burst["since"]) if burst.get("since") else incident.incident_at) - timedelta(seconds=rng.uniform(20, 70))
         entries.append((reload_at, f"{reload_at:%Y-%m-%d %H:%M:%S} crond[{rng.randint(300, 900)}]: (*system*{SERVICE_NAME}) RELOAD (/etc/cron.d/{SERVICE_NAME})"))
-        t = incident.incident_at.replace(second=0, microsecond=0)
+        burst_since = util.parse_iso(burst["since"]) if burst.get("since") else incident.incident_at
+        t = burst_since.replace(second=0, microsecond=0)
         n0, n1 = orders_range
         span_s = max(1.0, (end - start).total_seconds())
         while t < end:
-            if t >= incident.incident_at - timedelta(seconds=5):
+            if t >= burst_since - timedelta(seconds=5):
                 done = t + timedelta(seconds=burst["offset_s"] + burst["duration_s"] + rng.uniform(0.1, 0.6))
                 if done < end:
                     n_at = int(n0 + (n1 - n0) * min(1.0, (t - start).total_seconds() / span_s))
