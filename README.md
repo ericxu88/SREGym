@@ -238,6 +238,7 @@ Tool results are text, capped per tool (a full 50-line log page always fits).
                                       # with `grep -r`, globs, `..` or absolute paths (tested).
   host/                               # the "host filesystem" the agent operates on; all tool paths are confined here
     checkout-service/                 # git repo (9 commits over ~90 days), the service's working directory
+                                      # (names below show the classic identity; every world draws one of 8 -- see Stack variation)
       .env                            # production config, tracked in git, "shipped by deploy-bot"
       checkout/{config,db,main,serve,telemetry}.py   # FastAPI app: /health /users /orders POST /checkout /metrics
       migrations/*.sql  scripts/expire_carts.py  README.md  requirements.txt
@@ -474,6 +475,48 @@ Honest reading: at these budgets the step budget does most of the work — traje
 essentially never spends calls on the decoys (0.0–0.1 decoy-touching calls per episode). The herrings raise
 ambient log volume and add candidate hypotheses, but a frontier model filters them; they may matter more for
 weaker models and for fault composition. That is a measured property of the difficulty layer, not an assumption.
+
+## Stack variation (un-memorizability)
+
+Every world draws one of **8 coherent stack identities** from the seed, so "the
+checkout-service playbook" (`cat checkout/config.py`, `sqlite3 data/checkout.db`,
+`cat etc/cron.d/checkout-service`) does not transfer across episodes:
+
+- **service name** — repo dir, systemd unit, nginx conf + upstream, cron.d file, `APP_NAME`
+  (`checkout-service`, `storefront-api`, `order-service`, `commerce-gateway`, ...)
+- **python package** — import path, `python -m <pkg>.serve`, logger prefixes and traceback
+  frames in `app.log` (`checkout.access` vs `storefront.access`)
+- **database filenames** — `data/checkout.db`/`data/ledger.db` vs `data/storefront.db`/`data/payments.db`, ...
+- **API routes** — an optional prefix (`/api`, `/v1`) on the business endpoints and the checkout
+  path word (`/checkout` vs `/v1/purchase`); `/health` and `/metrics` never move
+
+The identity is consistent end to end — git history, `.env`, system files, three hours of
+historical logs and metric labels, the live process, tool documentation, the page, and the
+verifier's probes — and fault templates stay naming-agnostic: specs carry canonical endpoint
+templates ("POST /checkout") that the verifier and the log generator render through the
+world's naming. Injection machinery operates on the varied names too (a value-typo world on
+`storefront-api` ships `LEDGER_DATABASE_URL=sqlite:///data/payments.ddb`). `--stack auto`
+(default) picks per seed; `--stack classic` pins the original identity (used by the test
+suite); `--stack <service-name>` selects a variant for debugging. `report.md` adds a
+"By stack" breakdown.
+
+Deliberately **not** varied: table/column names (low memorization value, large verifier/SQL
+surface — a future lever) and the business domain itself (always an e-commerce checkout flow).
+
+**Measured: variation is difficulty-neutral** (claude-sonnet-5, lean, `env_var_typo` @ 10 steps,
+seeds 1–40 paired against the 200-seed classic baseline):
+
+| comparison | classic | varied |
+|---|---|---|
+| all 40 seeds | 70% (28/40) | 57.5% (23/40; CI 42–71%) |
+| the 33 seeds that drew a non-classic identity | 67% (22/33) | 64% (21/33) |
+| the 7 seeds that drew the classic identity (same worlds, two runs) | 86% (6/7) | 29% (2/7) |
+
+The paired non-classic delta is one episode; the headline gap is run-to-run sampling variance
+(identical worlds swung 6/7 → 2/7), and the varied rate lands exactly on the 200-seed baseline
+(58%, CI 51–65%). Failure taxonomy is unchanged (fixed_not_restarted + never_found, the known
+10-step budget modes); trajectory triage found no naming-related artifacts.
+Full report: `sweeps/varied-sonnet5-lean-steps10/report.md` (local).
 
 ## Calibration sweeps
 
