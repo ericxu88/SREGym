@@ -69,6 +69,7 @@ class TrafficGenerator(threading.Thread):
         self._request(method, path, body, rng.choice(tp.USER_AGENTS))
 
     def _request(self, method: str, path: str, body, ua: str, log_nginx: bool = True, ip: str | None = None) -> None:
+        path = self.world.naming.route(path)  # canonical -> this stack's concrete route
         status, text = util.http_request(method, self.world.base_url + path, body=body, timeout=8, headers={"User-Agent": ua})
         self.sent += 1
         if status == 0:

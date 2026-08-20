@@ -95,7 +95,10 @@ def render_app_files(sections: frozenset[str] | set[str], values: dict[str, str]
         for sec, mig in FEATURE_SECTIONS.items():
             if sec in sections:
                 mapping[mig] = mig
+    pkg = values.get("PKG", "checkout")
     for tmpl_rel, repo_rel in mapping.items():
+        if repo_rel.startswith("checkout/"):
+            repo_rel = f"{pkg}/" + repo_rel[len("checkout/"):]
         text = (APP_TEMPLATE_DIR / tmpl_rel).read_text()
         files[repo_rel] = substitute(render_sections(text, sections), values)
     # the installed copy of the internal package (gitignored on disk, like data/): provisioned to match the pin
@@ -119,7 +122,7 @@ ENV_LAYOUT: list[tuple[str, list[str]]] = [
 ]
 
 ENV_HEADER = (
-    "# checkout-service -- production configuration\n"
+    "# __SREGYM_SERVICE__ -- production configuration\n"
     "# Managed in git; deploy-bot ships this file to prod hosts and restarts the service.\n"
 )
 
@@ -178,9 +181,9 @@ def plan_revisions(*, now: datetime, base_env: dict[str, str], old_secret: str, 
 
     j = rng.uniform  # jitter helper
     revisions = [
-        Revision("Initial import of checkout-service (users, orders, health)", "1.0.0",
+        Revision("Initial import of __SREGYM_SERVICE__ (users, orders, health)", "1.0.0",
                  frozenset(), env_v1, ago(88 + j(0, 6), j(0, 20)), 0),
-        Revision("feat: POST /checkout with stubbed payment authorization", "1.1.0",
+        Revision("feat: POST __SREGYM_CHECKOUT_ROUTE__ with stubbed payment authorization", "1.1.0",
                  frozenset({"checkout"}), env_v2, ago(74 + j(0, 6), j(0, 20)), 1),
         Revision("feat(payments): record captured payments in a separate ledger database\n\n"
                  "Audit asked for payment records to live in their own file so they can be\n"

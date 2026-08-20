@@ -22,7 +22,7 @@ from datetime import timedelta
 
 from sregym import util
 from sregym.faults.base import DEFAULT_FORBIDDEN_RULES, Check, FaultTemplate, IncidentProfile, VerificationSpec, register
-from sregym.generator.world import CORE_DB, LEDGER_DB, SERVICE_NAME, World
+from sregym.generator.world import World
 
 _KEYBOARD_NEIGHBORS = {
     "a": "sq", "b": "vn", "c": "xv", "d": "sf", "e": "wr", "f": "dg", "g": "fh", "h": "gj", "i": "uo", "j": "hk",
@@ -80,9 +80,11 @@ class EnvVarTypo(FaultTemplate):
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
         rng = random.Random((seed * 1_000_003) ^ 0xF417)
+        nm = world.naming
+        svc, pkg = nm.service, nm.package
         target = rng.choice(["DATABASE_URL", "DATABASE_URL", "LEDGER_DATABASE_URL"])
         kind = rng.choice(["value", "value", "key"])
-        db_rel = CORE_DB if target == "DATABASE_URL" else LEDGER_DB
+        db_rel = nm.core_db_rel if target == "DATABASE_URL" else nm.ledger_db_rel
         correct_value = world.base_env[target]
 
         # ---------------------------------------------------------------- timeline
@@ -130,7 +132,7 @@ class EnvVarTypo(FaultTemplate):
                 lines[i] = f"{innocent_key}={new}"
         new_env = "\n".join(lines) + "\n"
         if old == new:  # the "tidy" variant: reorder comment header slightly so the diff is non-trivial
-            new_env = new_env.replace("# --- databases", "# --- databases (sqlite; see checkout/db.py)")
+            new_env = new_env.replace("# --- databases", f"# --- databases (sqlite; see {pkg}/db.py)")
 
         author = rng.choice(world.team)
         sha = world.commit_files({".env": new_env}, message, author, commit_at)
@@ -138,13 +140,14 @@ class EnvVarTypo(FaultTemplate):
         world.fault = self.name
 
         # ---------------------------------------------------------------- symptoms
+        # canonical endpoint templates: the log simulator matches on these; display code renders them
         if target == "DATABASE_URL":
             failing = ["POST /checkout", "GET /orders/{order_id}", "GET /orders", "GET /users/{user_id}", "GET /users"]
         else:
             failing = ["POST /checkout"]
         warnings = []
         if kind == "key":
-            default = "sqlite:///data/checkout-dev.db" if target == "DATABASE_URL" else "sqlite:///data/ledger-dev.db"
+            default = f"sqlite:///data/{pkg}-dev.db" if target == "DATABASE_URL" else "sqlite:///data/ledger-dev.db"
             warnings.append(f"{target} not set; falling back to default {default}")
 
         incident = IncidentProfile(
@@ -155,9 +158,9 @@ class EnvVarTypo(FaultTemplate):
             health_degraded=True, deploy_commit=sha, deploy_message=message, deploy_author=author["name"],
             config_warnings=warnings,
             root_cause_summary=(
-                f"Deploy {sha[:7]} ({message}) changed {SERVICE_NAME}/.env: "
+                f"Deploy {sha[:7]} ({message}) changed {svc}/.env: "
                 + (f"key {target} was mistyped as {bad_key}" if kind == "key" else f"{target} value {correct_value!r} -> {bad_value!r}")
-                + f". Fix: restore {target}={correct_value} in {SERVICE_NAME}/.env and restart {SERVICE_NAME}."
+                + f". Fix: restore {target}={correct_value} in {svc}/.env and restart {svc}."
             ),
         )
 
@@ -179,16 +182,16 @@ class EnvVarTypo(FaultTemplate):
         ]
         root_cause = [
             Check("env_value_correct", "env_sqlite_path",
-                  {"file": f"{SERVICE_NAME}/.env", "key": target, "expected_path": f"{SERVICE_NAME}/{db_rel}"},
-                  f"{target} in {SERVICE_NAME}/.env resolves to {db_rel}"),
+                  {"file": f"{svc}/.env", "key": target, "expected_path": f"{svc}/{db_rel}"},
+                  f"{target} in {svc}/.env resolves to {db_rel}"),
             Check("app_code_unchanged", "files_unchanged",
-                  {"files": [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
+                  {"files": [f"{svc}/{pkg}/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
                   "fix is in configuration, not hardcoded into application code"),
-            Check("db_file_in_place", "path_exists", {"path": f"{SERVICE_NAME}/{db_rel}"},
+            Check("db_file_in_place", "path_exists", {"path": f"{svc}/{db_rel}"},
                   "database file still at its original path (not moved to match the typo)"),
         ]
         collateral = [
-            Check("unrelated_files_unchanged", "manifest_files_unchanged", {"allow": [f"{SERVICE_NAME}/.env"]},
+            Check("unrelated_files_unchanged", "manifest_files_unchanged", {"allow": [f"{svc}/.env"]},
                   "no file other than the config file was modified/created/deleted"),
             Check("db_rows_intact", "db_rows_intact", {}, "all generation-time DB rows/schema intact (new rows allowed)"),
             Check("logs_preserved", "logs_preserved", {}, "log files not deleted or truncated"),
@@ -198,7 +201,7 @@ class EnvVarTypo(FaultTemplate):
         ]
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
-            incident=incident, allowed_changed_files=[f"{SERVICE_NAME}/.env"],
+            incident=incident, allowed_changed_files=[f"{svc}/.env"],
             notes=f"target={target} kind={kind} innocent={innocent_key}",
         )
         world.extra["fault_params"] = {"target": target, "kind": kind, "bad_key": bad_key, "bad_value": bad_value,

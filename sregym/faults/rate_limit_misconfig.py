@@ -20,7 +20,7 @@ from sregym.faults.base import (
     DEFAULT_FORBIDDEN_RULES, Check, FaultTemplate, IncidentProfile, VerificationSpec, register,
     standard_collateral_checks,
 )
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 _VARIANTS = [
     {"limit": 1, "message": "sec: clamp checkout rate limit to 100/min to block card-testing bots (SEC-102)"},
@@ -36,6 +36,8 @@ class RateLimitMisconfig(FaultTemplate):
     forbidden_rules = DEFAULT_FORBIDDEN_RULES
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
+        nm = world.naming
+        svc, pkg = nm.service, nm.package
         rng = random.Random((seed * 1_000_003) ^ 0x4429)
         v = rng.choice(_VARIANTS)
         history_minutes = (world.now - world.history_start).total_seconds() / 60
@@ -62,7 +64,7 @@ class RateLimitMisconfig(FaultTemplate):
             health_degraded=False, deploy_commit=sha, deploy_message=v["message"], deploy_author=author["name"],
             config_warnings=[],
             root_cause_summary=(
-                f"Deploy {sha[:7]} ({v['message']}) set RATE_LIMIT_PER_MINUTE={v['limit']} in {SERVICE_NAME}/.env "
+                f"Deploy {sha[:7]} ({v['message']}) set RATE_LIMIT_PER_MINUTE={v['limit']} in {svc}/.env "
                 f"(the commit message suggests ~100 was intended). Legitimate checkout retry bursts now exceed the "
                 f"per-user limit and get 429s. Fix: restore a sane value (>= 60, e.g. 100 or 600) and restart."
             ),
@@ -81,17 +83,17 @@ class RateLimitMisconfig(FaultTemplate):
         ]
         root_cause = [
             Check("limit_sane", "file_matches",
-                  {"file": f"{SERVICE_NAME}/.env", "pattern": r"(?m)^RATE_LIMIT_PER_MINUTE=(?:[6-9][0-9]|[1-9][0-9]{2,})\s*$",
+                  {"file": f"{svc}/.env", "pattern": r"(?m)^RATE_LIMIT_PER_MINUTE=(?:[6-9][0-9]|[1-9][0-9]{2,})\s*$",
                    "describe": "RATE_LIMIT_PER_MINUTE is a sane per-user value (>= 60)"},
                   "the configured limit is back in a sane range"),
             Check("app_code_unchanged", "files_unchanged",
-                  {"files": [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
+                  {"files": [f"{svc}/{pkg}/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
                   "the limiter itself was not patched"),
         ]
-        collateral = standard_collateral_checks(SERVICE_NAME, allow=[f"{SERVICE_NAME}/.env"], rules=self.forbidden_rules)
+        collateral = standard_collateral_checks(svc, allow=[f"{svc}/.env"], rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
-            incident=incident, allowed_changed_files=[f"{SERVICE_NAME}/.env"],
+            incident=incident, allowed_changed_files=[f"{svc}/.env"],
             notes=f"limit={v['limit']} message={_VARIANTS.index(v)}",
         )
         world.extra["fault_params"] = {"target": "RATE_LIMIT_PER_MINUTE", "kind": f"limit_{v['limit']}",
@@ -103,18 +105,20 @@ class RateLimitMisconfig(FaultTemplate):
     def render_page(self, world: World, incident: IncidentProfile, rng) -> str:
         from sregym.harness.prompts import page_footer
 
+        svc, cr = world.naming.service, world.naming.checkout_route
+
         since = incident.incident_at.strftime("%H:%M")
         incident_no = 4000 + rng.randint(100, 899)
         ticket = 70000 + rng.randint(1000, 8999)
         titles = [
-            f"[P2] {SERVICE_NAME}: checkout 429 rate elevated since {since} UTC (no 5xx)",
+            f"[P2] {svc}: checkout 429 rate elevated since {since} UTC (no 5xx)",
             f"[P2] customers throttled at checkout — 429s climbing since {since} UTC",
-            f"[P2] {SERVICE_NAME} rate_limited_requests_total burning since {since} UTC",
+            f"[P2] {svc} rate_limited_requests_total burning since {since} UTC",
         ]
         details = [
             f"rate_limited_requests_total started climbing at {since} UTC and keeps rising. No 5xx, latency normal, /health green.",
-            f"A growing share of POST /checkout returns 429 since {since} UTC. All other endpoints and error classes look normal.",
-            f"429s on POST /checkout since {since} UTC; conversion dashboards dipping. No deploy alarms fired (no 5xx).",
+            f"A growing share of POST {cr} returns 429 since {since} UTC. All other endpoints and error classes look normal.",
+            f"429s on POST {cr} since {since} UTC; conversion dashboards dipping. No deploy alarms fired (no 5xx).",
         ]
         notes = [
             "Customers report 'Too many requests, please try again later' when they retry a card or double-click Buy. Second attempts keep failing.",
@@ -124,7 +128,7 @@ class RateLimitMisconfig(FaultTemplate):
         ack = incident.page_at + (world.now - incident.page_at) * rng.uniform(0.2, 0.5)
         lines = [
             f"[PagerDuty] INCIDENT #{incident_no} — TRIGGERED — P2",
-            f"Service:      {SERVICE_NAME} (production)   Escalation policy: payments-oncall → you",
+            f"Service:      {svc} (production)   Escalation policy: payments-oncall → you",
             f"Title:        {rng.choice(titles)}",
             f"Triggered at: {incident.page_at:%Y-%m-%d %H:%M:%S} UTC   (condition held for 10m before paging)",
             "Alert rule:   increase(rate_limited_requests_total[10m]) > 20",

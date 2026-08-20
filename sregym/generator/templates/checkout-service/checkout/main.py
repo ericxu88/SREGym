@@ -1,11 +1,11 @@
-"""checkout-service HTTP API.
+"""__SREGYM_SERVICE__ HTTP API.
 
 Endpoints:
   GET  /health            liveness + database connectivity
-  GET  /users, /users/{id}
-  GET  /orders, /orders/{id}
+  GET  __SREGYM_ROUTE_PREFIX__/users, __SREGYM_ROUTE_PREFIX__/users/{id}
+  GET  __SREGYM_ROUTE_PREFIX__/orders, __SREGYM_ROUTE_PREFIX__/orders/{id}
 #[[ checkout
-  POST /checkout          create an order and capture payment
+  POST __SREGYM_CHECKOUT_ROUTE__          create an order and capture payment
 #]] checkout
 #[[ metrics
   GET  /metrics           Prometheus text exposition
@@ -35,9 +35,9 @@ from .db import core_db, ping
 from .db import ledger_db
 #]] ledger
 
-log = logging.getLogger("checkout.app")
-access_log = logging.getLogger("checkout.access")
-ratelimit_log = logging.getLogger("checkout.ratelimit")
+log = logging.getLogger("__SREGYM_PKG__.app")
+access_log = logging.getLogger("__SREGYM_PKG__.access")
+ratelimit_log = logging.getLogger("__SREGYM_PKG__.ratelimit")
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_DIR = os.path.dirname(_PKG_DIR)
@@ -181,7 +181,7 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(r) if r is not None else None
 
 
-@app.get("/users")
+@app.get("__SREGYM_ROUTE_PREFIX__/users")
 def list_users(request: Request, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)) -> dict[str, Any]:
     with core_db() as conn:
         rows = conn.execute(
@@ -192,7 +192,7 @@ def list_users(request: Request, limit: int = Query(20, ge=1, le=100), offset: i
     return {"users": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
 
 
-@app.get("/users/{user_id}")
+@app.get("__SREGYM_ROUTE_PREFIX__/users/{user_id}")
 def get_user(user_id: int, request: Request) -> dict[str, Any]:
     request.state.log_extra["user"] = user_id
     with core_db() as conn:
@@ -209,7 +209,7 @@ def get_user(user_id: int, request: Request) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- orders
-@app.get("/orders")
+@app.get("__SREGYM_ROUTE_PREFIX__/orders")
 def list_orders(
     request: Request,
     user_id: int | None = None,
@@ -236,7 +236,7 @@ def list_orders(
     return {"orders": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
 
 
-@app.get("/orders/{order_id}")
+@app.get("__SREGYM_ROUTE_PREFIX__/orders/{order_id}")
 def get_order(order_id: int, request: Request) -> dict[str, Any]:
     request.state.log_extra["order"] = order_id
     with core_db() as conn:
@@ -284,7 +284,7 @@ def _coupon_discount(code: str | None, total_cents: int) -> int:
 
 
 class _RateLimiter:
-    """Fixed-window per-user limiter for POST /checkout (in-memory, per process)."""
+    """Fixed-window per-user limiter for POST __SREGYM_CHECKOUT_ROUTE__ (in-memory, per process)."""
 
     def __init__(self, per_minute: int) -> None:
         self.per_minute = per_minute
@@ -314,7 +314,7 @@ def _authorize_payment(amount_cents: int, method: str, currency: str) -> str:
     return "ch_" + uuid.uuid4().hex[:16]
 
 
-@app.post("/checkout", status_code=201)
+@app.post("__SREGYM_CHECKOUT_ROUTE__", status_code=201)
 def checkout(payload: CheckoutRequest, request: Request) -> dict[str, Any]:
     request.state.log_extra["user"] = payload.user_id
     if not _limiter.allow(payload.user_id):

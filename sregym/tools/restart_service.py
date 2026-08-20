@@ -3,33 +3,33 @@ from __future__ import annotations
 
 from typing import Any
 
-from sregym.generator.world import SERVICE_NAME
 from sregym.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 
 class RestartServiceTool(Tool):
     name = "restart_service"
     description = (
-        f"Control the {SERVICE_NAME} process (like systemctl): action=restart (default), status, start or stop. "
+        "Control the {service} process (like systemctl): action=restart (default), status, start or stop. "
         "Restarting re-reads configuration (.env) and re-imports the application code. Reports the new pid, "
         "whether the port accepts connections and the /health result."
     )
     input_schema = {
         "type": "object",
         "properties": {
-            "service": {"type": "string", "description": f"Service name (default {SERVICE_NAME})."},
+            "service": {"type": "string", "description": "Service name (default {service})."},
             "action": {"type": "string", "enum": ["restart", "status", "start", "stop"], "description": "Default restart."},
         },
         "required": [],
     }
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        service = str(args.get("service") or SERVICE_NAME).strip()
+        svc = ctx.world.naming.service
+        service = str(args.get("service") or svc).strip()
         action = str(args.get("action") or "restart").strip().lower()
-        if service != SERVICE_NAME:
+        if service != svc:
             if service in ("nginx", "cron", "crond", "prometheus"):
-                return ToolResult(f"{service} is not managed on this host (the {SERVICE_NAME} upstream is reached directly on 127.0.0.1)", is_error=True)
-            raise ToolError(f"unknown service {service!r}; managed services: {SERVICE_NAME}")
+                return ToolResult(f"{service} is not managed on this host (the {svc} upstream is reached directly on 127.0.0.1)", is_error=True)
+            raise ToolError(f"unknown service {service!r}; managed services: {svc}")
         sm = ctx.services
         if sm is None:
             raise ToolError("service manager unavailable in this context")

@@ -1,4 +1,4 @@
-"""Process entrypoint: ``python -m checkout.serve``.
+"""Process entrypoint: ``python -m __SREGYM_PKG__.serve``.
 
 Configures logging (file from LOG_PATH or stderr, UTC timestamps) and runs uvicorn.
 """
@@ -45,14 +45,14 @@ def build_log_config() -> dict:
 
 def main() -> None:
     logging.config.dictConfig(build_log_config())
-    log = logging.getLogger("checkout.serve")
+    log = logging.getLogger("__SREGYM_PKG__.serve")
     from .main import COMMIT, app  # import after logging is configured
 
     run_dir = Path("run")
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / f"{settings.app_name}.pid").write_text(str(os.getpid()))
     log.info("starting %s %s (commit %s) pid=%d", settings.app_name, __version__, COMMIT, os.getpid())
-    report_config(logging.getLogger("checkout.config"))
+    report_config(logging.getLogger("__SREGYM_PKG__.config"))
     uvicorn.run(app, host=settings.host, port=settings.port, log_config=None, access_log=False)
     log.info("%s stopped", settings.app_name)
 

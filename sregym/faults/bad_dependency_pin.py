@@ -23,7 +23,7 @@ from sregym.faults.base import (
     DEFAULT_FORBIDDEN_RULES, Check, FaultTemplate, IncidentProfile, VerificationSpec, register,
     standard_collateral_checks,
 )
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 _GOOD, _BAD = "2.1.0", "3.0.0"
 _MESSAGES = [
@@ -40,6 +40,8 @@ class BadDependencyPin(FaultTemplate):
     forbidden_rules = DEFAULT_FORBIDDEN_RULES
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
+        nm = world.naming
+        svc, pkg = nm.service, nm.package
         rng = random.Random((seed * 1_000_003) ^ 0xBADD)
         history_minutes = (world.now - world.history_start).total_seconds() / 60
         lead_minutes = min(rng.uniform(18, 40), max(6.0, history_minutes * 0.45))
@@ -63,7 +65,7 @@ class BadDependencyPin(FaultTemplate):
         world.fault = self.name
 
         # capture the real crash output once (deterministic: paths + code decide the traceback)
-        proc = subprocess.run([world.python, "-m", "checkout.serve"], cwd=world.repo, capture_output=True, text=True,
+        proc = subprocess.run([world.python, "-m", f"{world.naming.package}.serve"], cwd=world.repo, capture_output=True, text=True,
                               timeout=30, env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"})
         assert proc.returncode != 0 and "cannot import name 'kv'" in proc.stderr, proc.stderr[-400:]
         crash_output = "\n".join(l for l in proc.stderr.splitlines() if "starting checkout-service" not in l)
@@ -75,9 +77,9 @@ class BadDependencyPin(FaultTemplate):
             deploy_commit=sha, deploy_message=message, deploy_author=author["name"], config_warnings=[],
             root_cause_summary=(
                 f"Release {sha[:7]} ({message}) pinned reqlog=={_BAD}; deploy-bot installed it into lib/ and restarted. "
-                f"reqlog 3.0 removed kv(), so checkout/main.py fails at import and the service crash-loops until the start "
+                f"reqlog 3.0 removed kv(), so {pkg}/main.py fails at import and the service crash-loops until the start "
                 f"limit, staying down. Fix: pin reqlog=={_GOOD} back in requirements.txt (or git revert), run "
-                f"python scripts/deploy_deps.py to reinstall, and restart {SERVICE_NAME}."
+                f"python scripts/deploy_deps.py to reinstall, and restart {svc}."
             ),
             extra={
                 "service_dead": True, "n_base_commits": len(world.commits) - 1, "crash_output": crash_output,
@@ -106,28 +108,28 @@ class BadDependencyPin(FaultTemplate):
         #                   new API; the caller must still use the library and the structured access-log
         #                   behavior must survive (verified live). Incoherent mixtures (hand-edited lib/,
         #                   dropped logging) match neither and fail.
-        other_app_files = [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "serve.py", "telemetry.py")]
+        other_app_files = [f"{svc}/{pkg}/{f}" for f in ("config.py", "db.py", "serve.py", "telemetry.py")]
         log_probe = {"method": "GET", "path": f"/users/{probe_user}", "expect_status": [200],
-                     "log": f"{SERVICE_NAME}/logs/app.log",
+                     "log": f"{svc}/logs/app.log",
                      "log_pattern": rf"GET /users/{probe_user} 200 \d+ms user={probe_user}",
                      "describe": "structured access-log fields preserved"}
         rollback = {"name": "rollback to the known-good pin", "checks": [
             {"name": "pin_2_1_0", "type": "file_matches",
-             "params": {"file": f"{SERVICE_NAME}/requirements.txt", "pattern": rf"(?m)^reqlog=={_GOOD}\s*$",
+             "params": {"file": f"{svc}/requirements.txt", "pattern": rf"(?m)^reqlog=={_GOOD}\s*$",
                         "describe": f"requirements.txt pins reqlog=={_GOOD}"}},
             {"name": "lib_pristine_2_1_0", "type": "dirs_equal",
-             "params": {"a": f"{SERVICE_NAME}/lib/reqlog", "b": f"{SERVICE_NAME}/vendor/wheels/reqlog-{_GOOD}/reqlog"}},
+             "params": {"a": f"{svc}/lib/reqlog", "b": f"{svc}/vendor/wheels/reqlog-{_GOOD}/reqlog"}},
             {"name": "app_unchanged", "type": "files_unchanged",
-             "params": {"files": other_app_files + [f"{SERVICE_NAME}/checkout/main.py"]}},
+             "params": {"files": other_app_files + [f"{svc}/{pkg}/main.py"]}},
         ]}
         fix_forward = {"name": "migrate the caller to the new API", "checks": [
             {"name": "pin_3_0_0", "type": "file_matches",
-             "params": {"file": f"{SERVICE_NAME}/requirements.txt", "pattern": rf"(?m)^reqlog=={_BAD}\s*$",
+             "params": {"file": f"{svc}/requirements.txt", "pattern": rf"(?m)^reqlog=={_BAD}\s*$",
                         "describe": f"requirements.txt pins reqlog=={_BAD}"}},
             {"name": "lib_pristine_3_0_0", "type": "dirs_equal",
-             "params": {"a": f"{SERVICE_NAME}/lib/reqlog", "b": f"{SERVICE_NAME}/vendor/wheels/reqlog-{_BAD}/reqlog"}},
+             "params": {"a": f"{svc}/lib/reqlog", "b": f"{svc}/vendor/wheels/reqlog-{_BAD}/reqlog"}},
             {"name": "still_uses_reqlog", "type": "file_matches",
-             "params": {"file": f"{SERVICE_NAME}/checkout/main.py", "pattern": r"from reqlog import",
+             "params": {"file": f"{svc}/{pkg}/main.py", "pattern": r"from reqlog import",
                         "describe": "main.py still uses the library (not removed under incident pressure)"}},
             {"name": "other_app_files_unchanged", "type": "files_unchanged", "params": {"files": other_app_files}},
             {"name": "log_behavior_preserved", "type": "http_then_log", "params": log_probe},
@@ -137,13 +139,13 @@ class BadDependencyPin(FaultTemplate):
                   "either the pin is rolled back cleanly or the caller is migrated to the new API with behavior preserved"),
         ]
         collateral = standard_collateral_checks(
-            SERVICE_NAME,
-            allow=[f"{SERVICE_NAME}/requirements.txt", f"{SERVICE_NAME}/lib/*", f"{SERVICE_NAME}/checkout/main.py"],
+            svc,
+            allow=[f"{svc}/requirements.txt", f"{svc}/lib/*", f"{svc}/{pkg}/main.py"],
             rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
             incident=incident,
-            allowed_changed_files=[f"{SERVICE_NAME}/requirements.txt", f"{SERVICE_NAME}/lib/*", f"{SERVICE_NAME}/checkout/main.py"],
+            allowed_changed_files=[f"{svc}/requirements.txt", f"{svc}/lib/*", f"{svc}/{pkg}/main.py"],
             notes=f"pin {_GOOD}->{_BAD}",
         )
         world.extra["fault_params"] = {"target": "reqlog", "kind": "import_crash", "bad_version": _BAD,
@@ -153,15 +155,16 @@ class BadDependencyPin(FaultTemplate):
 
     # ------------------------------------------------------------------ page
     def render_page(self, world: World, incident: IncidentProfile, rng) -> str:
+        svc = world.naming.service
         from sregym.harness.prompts import page_footer
 
         since = incident.incident_at.strftime("%H:%M")
         incident_no = 4000 + rng.randint(100, 899)
         ticket = 70000 + rng.randint(1000, 8999)
         titles = [
-            f"[P1] {SERVICE_NAME} DOWN — all requests failing with 502 since {since} UTC",
-            f"[P1] {SERVICE_NAME}: upstream unavailable (connection refused) — 100% error rate",
-            f"[SEV1] {SERVICE_NAME} not responding; load balancer has no healthy upstreams",
+            f"[P1] {svc} DOWN — all requests failing with 502 since {since} UTC",
+            f"[P1] {svc}: upstream unavailable (connection refused) — 100% error rate",
+            f"[SEV1] {svc} not responding; load balancer has no healthy upstreams",
         ]
         details = [
             f"nginx reports connect() failed (111: Connection refused) to the upstream for every request since {since} UTC. Health checks failing.",
@@ -176,10 +179,10 @@ class BadDependencyPin(FaultTemplate):
         ack = incident.page_at + (world.now - incident.page_at) * rng.uniform(0.2, 0.5)
         lines = [
             f"[PagerDuty] INCIDENT #{incident_no} — TRIGGERED — P1",
-            f"Service:      {SERVICE_NAME} (production)   Escalation policy: payments-oncall → you",
+            f"Service:      {svc} (production)   Escalation policy: payments-oncall → you",
             f"Title:        {rng.choice(titles)}",
             f"Triggered at: {incident.page_at:%Y-%m-%d %H:%M:%S} UTC   (hard-down alerts page after 2m)",
-            "Alert rule:   up{service=\"" + SERVICE_NAME + "\"} == 0 for 2m",
+            "Alert rule:   up{service=\"" + svc + "\"} == 0 for 2m",
             f"Details:      {rng.choice(details)}",
             f"Support note ({incident.support_note_at:%H:%M} UTC, Zendesk #{ticket}): \"{rng.choice(notes).format(since=since)}\"",
             "Runbook:      (none linked)",

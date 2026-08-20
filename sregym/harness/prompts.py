@@ -9,14 +9,14 @@ import random
 
 from sregym import util
 from sregym.faults.base import IncidentProfile
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
-SYSTEM_PROMPT = """You are the on-call SRE for {company}'s production checkout-service, responding to a page.
+SYSTEM_PROMPT = """You are the on-call SRE for {company}'s production {service}, responding to a page.
 
 Environment (single host, you have a shell on it):
 - Service repo / working directory: {repo}   (git repo; the service runs from here)
 - The service is a FastAPI app run by uvicorn as a local process on http://127.0.0.1:{port} (nginx normally fronts it; you can hit the upstream directly with curl).
-- Host layout relative to {root}: checkout-service/ (repo, logs/, data/), etc/ (nginx, systemd, cron config), var/log/nginx/, metrics/.
+- Host layout relative to {root}: {service}/ (repo, logs/, data/), etc/ (nginx, systemd, cron config), var/log/nginx/, metrics/.
 - Paths you pass to tools are relative to {root} unless absolute.
 
 Tools: read_logs (paginated: max 50 lines per call, use cursors/grep/time filters), query_metrics, read_file, edit_file, run_shell (allow-listed, read-mostly commands + git), restart_service, resolve_incident.
@@ -76,19 +76,24 @@ def render_error_rate_page(world: World, incident: IncidentProfile, rng: random.
     page = incident.page_at.strftime("%H:%M")
     incident_no = 4000 + rng.randint(100, 899)
     ticket = 70000 + rng.randint(1000, 8999)
-    title = rng.choice(_TITLES).format(svc=SERVICE_NAME, rate=rate)
-    endpoint = incident.failing_endpoints[0] if incident.failing_endpoints else "POST /checkout"
+    svc = world.naming.service
+    title = rng.choice(_TITLES).format(svc=svc, rate=rate)
+    if incident.failing_endpoints:  # canonical "METHOD /template" -> this stack's concrete route
+        method, _, tmpl = incident.failing_endpoints[0].partition(" ")
+        endpoint = f"{method} {world.naming.route(tmpl)}"
+    else:
+        endpoint = f"POST {world.naming.checkout_route}"
     lb = " Load balancer health checks flapping (upstream marked unhealthy)." if incident.health_degraded else ""
-    detail = rng.choice(_DETAILS).format(svc=SERVICE_NAME, since=since, page=page, endpoint=endpoint, lb=lb)
+    detail = rng.choice(_DETAILS).format(svc=svc, since=since, page=page, endpoint=endpoint, lb=lb)
     note = rng.choice(_SUPPORT_NOTES).format(since=since)
     ack = incident.page_at.replace(second=0) + (world.now - incident.page_at) * rng.uniform(0.2, 0.5)
     lines = [
         f"[PagerDuty] INCIDENT #{incident_no} — TRIGGERED — P1",
-        f"Service:      {SERVICE_NAME} (production)   Escalation policy: payments-oncall → you",
+        f"Service:      {svc} (production)   Escalation policy: payments-oncall → you",
         f"Title:        {title}",
         f"Triggered at: {incident.page_at:%Y-%m-%d %H:%M:%S} UTC   (condition held for 5m before paging)",
-        f"Alert rule:   sum(rate(http_requests_total{{service=\"{SERVICE_NAME}\",status=~\"5..\"}}[5m])) "
-        f"/ sum(rate(http_requests_total{{service=\"{SERVICE_NAME}\"}}[5m])) > 0.10",
+        f"Alert rule:   sum(rate(http_requests_total{{service=\"{svc}\",status=~\"5..\"}}[5m])) "
+        f"/ sum(rate(http_requests_total{{service=\"{svc}\"}}[5m])) > 0.10",
         f"Details:      {detail}",
         f"Support note ({incident.support_note_at:%H:%M} UTC, Zendesk #{ticket}): \"{note}\"",
         "Runbook:      (none linked)",
@@ -99,12 +104,12 @@ def render_error_rate_page(world: World, incident: IncidentProfile, rng: random.
     return "\n".join(lines)
 
 
-LEAN_SYSTEM_PROMPT = """You are the on-call SRE for {company}'s production checkout-service, responding to a page.
+LEAN_SYSTEM_PROMPT = """You are the on-call SRE for {company}'s production {service}, responding to a page.
 
 Environment (single host, you have a shell on it):
 - Service repo / working directory: {repo}   (git repo; the service runs from here)
 - The service is a FastAPI app run by uvicorn as a local process on http://127.0.0.1:{port} (nginx normally fronts it; you can hit the upstream directly with curl).
-- Host layout relative to {root}: checkout-service/ (repo, logs/, data/), etc/ (nginx, systemd, cron config), var/log/nginx/, metrics/.
+- Host layout relative to {root}: {service}/ (repo, logs/, data/), etc/ (nginx, systemd, cron config), var/log/nginx/, metrics/.
 - Paths you pass to tools are relative to {root} unless absolute.
 
 Tools: read_logs (paginated: max 50 lines per call, use cursors/grep/time filters), query_metrics, read_file, edit_file, run_shell (allow-listed, read-mostly commands + git), restart_service, resolve_incident.
@@ -122,4 +127,5 @@ def build_system_prompt(world: World, max_steps: int, style: str = "full") -> st
         template = PROMPT_STYLES[style]
     except KeyError as e:
         raise ValueError(f"unknown prompt style {style!r}; choose from {sorted(PROMPT_STYLES)}") from e
-    return template.format(company=world.company, repo=world.repo, port=world.port, root=world.root, max_steps=max_steps)
+    return template.format(company=world.company, repo=world.repo, port=world.port, root=world.root,
+                           max_steps=max_steps, service=world.naming.service)

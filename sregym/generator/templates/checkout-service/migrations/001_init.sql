@@ -1,4 +1,4 @@
--- 001_init: core schema for checkout-service
+-- 001_init: core schema for __SREGYM_SERVICE__
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version    TEXT PRIMARY KEY,
     applied_at TEXT NOT NULL

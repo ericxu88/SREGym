@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sregym import util
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 if TYPE_CHECKING:  # pragma: no cover
     from sregym.runtime.services import ServiceManager
@@ -53,7 +53,7 @@ class ToolContext:
                 files = {}
             self._manifest_files = dict(files)
             self._allowed_scripts = {rel: sha for rel, sha in files.items()
-                                     if rel.startswith(f"{SERVICE_NAME}/scripts/") and rel.endswith(".py")}
+                                     if rel.startswith(f"{self.world.naming.service}/scripts/") and rel.endswith(".py")}
         return self._allowed_scripts
 
 
@@ -70,8 +70,11 @@ class Tool:
     def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:  # pragma: no cover - interface
         raise NotImplementedError
 
-    def spec(self) -> dict[str, Any]:
-        return {"name": self.name, "description": self.description, "input_schema": self.input_schema}
+    def spec(self, ctx: "ToolContext | None" = None) -> dict[str, Any]:
+        out = {"name": self.name, "description": self.description, "input_schema": self.input_schema}
+        if ctx is not None:  # substitute this world's stack names into the tool docs
+            out = _sub_names(out, {"{service}": ctx.world.naming.service, "{checkout_route}": ctx.world.naming.checkout_route})
+        return out
 
 
 def resolve_path(ctx: ToolContext, path: str, must_exist: bool = True) -> Path:
@@ -93,12 +96,24 @@ def clip(text: str, limit: int) -> str:
     return util.truncate_text(text, limit, marker="\n... [output truncated: {n} chars omitted; narrow your query] ...\n")
 
 
+def _sub_names(obj: Any, values: dict[str, str]) -> Any:
+    if isinstance(obj, str):
+        for k, v in values.items():
+            obj = obj.replace(k, v)
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sub_names(v, values) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sub_names(x, values) for x in obj]
+    return obj
+
+
 class ToolRegistry:
     def __init__(self, tools: list[Tool]):
         self.tools = {t.name: t for t in tools}
 
-    def specs(self) -> list[dict[str, Any]]:
-        return [t.spec() for t in self.tools.values()]
+    def specs(self, ctx: "ToolContext | None" = None) -> list[dict[str, Any]]:
+        return [t.spec(ctx) for t in self.tools.values()]
 
     def call(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         tool = self.tools.get(name)

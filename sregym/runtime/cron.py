@@ -1,4 +1,4 @@
-"""A minimal cron daemon for the live world: runs the jobs in etc/cron.d/checkout-service on schedule.
+"""A minimal cron daemon for the live world: runs the jobs in etc/cron.d/<service> on schedule.
 
 Safety: cron.d is agent-editable, so only commands of the form
 ``cd <repo> && <python> scripts/<name>.py [args] [>> logs/cron.log 2>&1]`` are executed, and only when the
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sregym import util
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 _FIELD_RE = re.compile(r"^(\*|\d+)(?:-(\d+))?(?:/(\d+))?$")
 
@@ -63,7 +63,7 @@ class CronRunner(threading.Thread):
     def __init__(self, world: World, allowed_scripts: dict[str, str] | None = None):
         super().__init__(name="sregym-cron", daemon=True)
         self.world = world
-        self.crontab = world.root / "etc" / "cron.d" / SERVICE_NAME
+        self.crontab = world.root / "etc" / "cron.d" / world.naming.service
         self.cron_log = world.log_dir / "cron.log"
         self._stop = threading.Event()
         self._allowed = allowed_scripts
@@ -81,7 +81,7 @@ class CronRunner(threading.Thread):
                 files = self.world.load_manifest().get("files", {})
             except (OSError, ValueError):
                 files = {}
-            self._allowed = {rel: sha for rel, sha in files.items() if rel.startswith(f"{SERVICE_NAME}/scripts/") and rel.endswith(".py")}
+            self._allowed = {rel: sha for rel, sha in files.items() if rel.startswith(f"{self.world.naming.service}/scripts/") and rel.endswith(".py")}
         return self._allowed
 
     def busy(self) -> bool:

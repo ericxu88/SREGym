@@ -109,7 +109,7 @@ class Verifier:
         (``then_sql = {db, sql, response_key, expect_min}``), e.g. "the payment for this order is in the ledger"."""
         status, text = 0, ""
         for attempt in range(3):
-            status, text = util.http_request(method, self.base_url + path, body=body, timeout=5)
+            status, text = util.http_request(method, self.base_url + self.world.naming.route(path), body=body, timeout=5)
             if status != 0:
                 break
             time.sleep(0.4)
@@ -166,7 +166,7 @@ class Verifier:
         n = 0
         while time.time() - started < seconds:
             n += 1
-            status, text = util.http_request(method, self.base_url + path, body=body, timeout=12)
+            status, text = util.http_request(method, self.base_url + self.world.naming.route(path), body=body, timeout=12)
             if status not in expect_status:
                 return False, f"{method} {path} -> {status if status else 'timeout/connection error'} on probe {n} ({time.time() - started:.0f}s into the window): {text[:120]}"
             time.sleep(interval)
@@ -290,7 +290,7 @@ class Verifier:
         """N rapid sequential requests must ALL return an expected status (e.g. a user's legitimate
         retry burst must not be rate-limited)."""
         for i in range(1, n + 1):
-            status, text = util.http_request(method, self.base_url + path, body=body, timeout=8)
+            status, text = util.http_request(method, self.base_url + self.world.naming.route(path), body=body, timeout=8)
             if status not in expect_status:
                 return False, (describe + ": " if describe else "") +                     f"request {i}/{n} -> {status if status else 'connection failed'} (expected {expect_status}): {text[:120]}"
             time.sleep(0.15)

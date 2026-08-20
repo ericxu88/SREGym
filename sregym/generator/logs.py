@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from sregym import util
 from sregym.generator import traffic_profile as tp
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 if TYPE_CHECKING:  # pragma: no cover
     from sregym.faults.base import IncidentProfile
@@ -62,6 +62,10 @@ class _Sim:
         self.seq += 1
         return self.seq
 
+    @property
+    def pkg(self) -> str:
+        return self.world.naming.package
+
 
 def _fmt(ts: datetime, level: str, logger: str, msg: str) -> str:
     return f"{util.fmt_log_ts(ts)} {level:<7} {logger} {msg}"
@@ -74,10 +78,10 @@ def _find_line(lines: list[str], needle: str, start: int = 0) -> int:
     raise ValueError(f"line containing {needle!r} not found")
 
 
-def _traceback_templates(repo: Path) -> dict[str, list[str]]:
+def _traceback_templates(repo: Path, pkg: str) -> dict[str, list[str]]:
     """Traceback text per failing handler, with line numbers taken from the real source."""
-    main = (repo / "checkout" / "main.py").read_text().splitlines()
-    db = (repo / "checkout" / "db.py").read_text().splitlines()
+    main = (repo / pkg / "main.py").read_text().splitlines()
+    db = (repo / pkg / "db.py").read_text().splitlines()
     l_call_next = _find_line(main, "response = await call_next(request)")
     l_session = _find_line(db, "conn = _connect(url)")
     l_connect = _find_line(db, "conn = sqlite3.connect(")
@@ -94,15 +98,15 @@ def _traceback_templates(repo: Path) -> dict[str, list[str]]:
     def build(handler: str, needle: str, db_func: str, l_db: int, db_src: str) -> list[str]:
         return [
             "Traceback (most recent call last):",
-            f'  File "checkout/main.py", line {l_call_next}, in observe_requests',
+            f'  File "{pkg}/main.py", line {l_call_next}, in observe_requests',
             "    response = await call_next(request)",
-            f'  File "checkout/main.py", line {handler_with(handler, needle)}, in {handler}',
+            f'  File "{pkg}/main.py", line {handler_with(handler, needle)}, in {handler}',
             f"    {needle}",
-            f'  File "checkout/db.py", line {l_db}, in {db_func}',
+            f'  File "{pkg}/db.py", line {l_db}, in {db_func}',
             f"    {db_src}",
-            f'  File "checkout/db.py", line {l_session}, in _session',
+            f'  File "{pkg}/db.py", line {l_session}, in _session',
             "    conn = _connect(url)",
-            f'  File "checkout/db.py", line {l_connect}, in _connect',
+            f'  File "{pkg}/db.py", line {l_connect}, in _connect',
             f"    {connect_src}",
         ]
 
@@ -117,9 +121,9 @@ def _traceback_templates(repo: Path) -> dict[str, list[str]]:
         lineno = handler_with(handler, needle)
         return [
             "Traceback (most recent call last):",
-            f'  File "checkout/main.py", line {l_call_next}, in observe_requests',
+            f'  File "{pkg}/main.py", line {l_call_next}, in observe_requests',
             "    response = await call_next(request)",
-            f'  File "checkout/main.py", line {lineno}, in {handler}',
+            f'  File "{pkg}/main.py", line {lineno}, in {handler}',
             f"    {main[lineno - 1].strip()}",
         ]
 
@@ -163,25 +167,28 @@ def _record_request(sim: _Sim, ts: datetime, method: str, template: str, path: s
                     latency: float, extra: dict[str, Any], error: str | None, tb_key: str | None,
                     warn_lines: list[str] | None = None, ua: str | None = None, ip: str | None = None) -> None:
     rng = sim.rng
+    nm = sim.world.naming
+    path = nm.route(path)
+    label = nm.route(template)
     req_id = "%08x" % rng.getrandbits(32)
     lines: list[str] = []
     for w in warn_lines or []:
-        lines.append(_fmt(ts, "WARNING", "checkout.db", w))
+        lines.append(_fmt(ts, "WARNING", f"{sim.pkg}.db", w))
     if tb_key:
         for tb_line in sim.tb[tb_key] + [error]:
-            lines.append(_fmt(ts, "ERROR", "checkout.app", f"req={req_id} {tb_line}"))
+            lines.append(_fmt(ts, "ERROR", f"{sim.pkg}.app", f"req={req_id} {tb_line}"))
     msg = f"req={req_id} {method} {path} {status} {latency:.0f}ms"
     if extra:
         msg += " " + " ".join(f"{k}={v}" for k, v in extra.items())
     if error:
         msg += f' error="{error}"'
     level = "ERROR" if status >= 500 else "INFO"
-    lines.append(_fmt(ts, level, "checkout.access", msg))
+    lines.append(_fmt(ts, level, f"{sim.pkg}.access", msg))
     sim.events.append(_Event(ts, lines, sim.next_seq()))
     # metrics
-    _bump_metric(sim, ts, "http_requests_total", {"method": method, "path": template, "status": str(status)}, 1)
-    _bump_metric(sim, ts, "http_request_duration_ms_sum", {"path": template}, round(latency, 3))
-    _bump_metric(sim, ts, "http_request_duration_ms_count", {"path": template}, 1)
+    _bump_metric(sim, ts, "http_requests_total", {"method": method, "path": label, "status": str(status)}, 1)
+    _bump_metric(sim, ts, "http_request_duration_ms_sum", {"path": label}, round(latency, 3))
+    _bump_metric(sim, ts, "http_request_duration_ms_count", {"path": label}, 1)
     if error and sim.incident:
         _bump_metric(sim, ts, "db_errors_total", {"db": sim.incident.broken_db}, 1)
     # nginx access log (health probes are access_log off in the nginx config)
@@ -215,7 +222,7 @@ def _checkout_attempt(sim: _Sim, ts: datetime, user_id: int, failing: bool, core
     minute_key = (user_id, ts.strftime("%Y-%m-%dT%H:%M"))
     sim.rate_counts[minute_key] = sim.rate_counts.get(minute_key, 0) + 1
     if sim.rate_counts[minute_key] > limit:
-        sim.events.append(_Event(ts, [_fmt(ts, "WARNING", "checkout.ratelimit", f"user={user_id} exceeded {limit} checkouts/min")], sim.next_seq()))
+        sim.events.append(_Event(ts, [_fmt(ts, "WARNING", f"{sim.pkg}.ratelimit", f"user={user_id} exceeded {limit} checkouts/min")], sim.next_seq()))
         _bump_metric(sim, ts, "rate_limited_requests_total", {}, 1)
         _record_request(sim, ts, "POST", "/checkout", "/checkout", 429, tp.latency_ms(rng, "/orders"), extra, None, None)
         return
@@ -346,13 +353,13 @@ def _restart_sequence(sim: _Sim, restart_at: datetime, commit_sha: str, version:
         (t + timedelta(milliseconds=103), "INFO", "uvicorn.error", "Waiting for application shutdown."),
         (t + timedelta(milliseconds=104), "INFO", "uvicorn.error", "Application shutdown complete."),
         (t + timedelta(milliseconds=105), "INFO", "uvicorn.error", f"Finished server process [{old_pid}]"),
-        (restart_at, "INFO", "checkout.serve", f"starting {SERVICE_NAME} {version} (commit {commit_sha[:7]}) pid={new_pid}"),
-        (restart_at + timedelta(milliseconds=1), "INFO", "checkout.config", f"loaded configuration from .env ({n_keys} keys)"),
+        (restart_at, "INFO", f"{sim.pkg}.serve", f"starting {sim.world.naming.service} {version} (commit {commit_sha[:7]}) pid={new_pid}"),
+        (restart_at + timedelta(milliseconds=1), "INFO", f"{sim.pkg}.config", f"loaded configuration from .env ({n_keys} keys)"),
     ]
     for w in warnings:
-        seq.append((restart_at + timedelta(milliseconds=1), "WARNING", "checkout.config", w))
+        seq.append((restart_at + timedelta(milliseconds=1), "WARNING", f"{sim.pkg}.config", w))
     seq += [
-        (restart_at + timedelta(milliseconds=2), "INFO", "checkout.config", "environment=production log_level=INFO"),
+        (restart_at + timedelta(milliseconds=2), "INFO", f"{sim.pkg}.config", "environment=production log_level=INFO"),
         (restart_at + timedelta(milliseconds=21), "INFO", "uvicorn.error", f"Started server process [{new_pid}]"),
         (restart_at + timedelta(milliseconds=22), "INFO", "uvicorn.error", "Waiting for application startup."),
         (restart_at + timedelta(milliseconds=22), "INFO", "uvicorn.error", "Application startup complete."),
@@ -379,7 +386,7 @@ def _crash_loop_sequence(sim: _Sim, incident: IncidentProfile, version: str, old
     at = incident.restart_at
     for attempt in range(5):
         pid = rng.randint(30001, 60000)
-        lines = [_fmt(at, "INFO", "checkout.serve", f"starting {SERVICE_NAME} {version} (commit {incident.deploy_commit[:7]}) pid={pid}")]
+        lines = [_fmt(at, "INFO", f"{sim.pkg}.serve", f"starting {sim.world.naming.service} {version} (commit {incident.deploy_commit[:7]}) pid={pid}")]
         if crash_raw:
             lines.extend(crash_raw.splitlines())
         sim.events.append(_Event(at, lines, sim.next_seq()))
@@ -402,10 +409,10 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     rng = random.Random((seed * 7919) ^ 0x106)
     user_ids, products, max_order, ledger_count, ledger_last = _load_refs(world)
     sim = _Sim(rng=rng, world=world, incident=incident, user_ids=user_ids, products=products,
-               max_order_id=max_order, tb=_traceback_templates(world.repo),
+               max_order_id=max_order, tb=_traceback_templates(world.repo, world.naming.package),
                ledger_base_count=ledger_count, ledger_base_last=ledger_last)
     start, end = world.history_start, world.now
-    version = re.search(r'__version__ = "([^"]+)"', (world.repo / "checkout" / "__init__.py").read_text()).group(1)
+    version = re.search(r'__version__ = "([^"]+)"', (world.repo / world.naming.package / "__init__.py").read_text()).group(1)
     n_keys = len(util.parse_env_file(world.env_file.read_text()))
     base_rps = rng.uniform(1.2, 2.1)
 
@@ -439,13 +446,13 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
             if gap and gap[0] <= ts <= gap[1]:
                 # upstream down during the restart: nginx sees connection refused
                 method, template = tp.pick_endpoint(rng)
-                path = template.replace("{order_id}", str(rng.randint(1, sim.max_order_id))).replace("{user_id}", str(rng.choice(user_ids)))
+                path = world.naming.route(template.replace("{order_id}", str(rng.randint(1, sim.max_order_id))).replace("{user_id}", str(rng.choice(user_ids))))
                 ip = tp.fake_client_ip(rng)
                 sim.nginx_access.append((ts, f'{ip} - - [{ts.strftime("%d/%b/%Y:%H:%M:%S +0000")}] "{method} {path} HTTP/1.1" 502 157 "-" "{rng.choice(tp.USER_AGENTS)}"'))
                 sim.nginx_error.append((ts, (
                     f'{ts.strftime("%Y/%m/%d %H:%M:%S")} [error] {rng.randint(1000, 4000)}#{rng.randint(1000, 4000)}: *{rng.randint(10000, 99999)} '
-                    f'connect() failed (111: Connection refused) while connecting to upstream, client: {ip}, server: checkout.{world.domain}, '
-                    f'request: "{method} {path} HTTP/1.1", upstream: "http://127.0.0.1:{world.port}{path}", host: "checkout.{world.domain}"')))
+                    f'connect() failed (111: Connection refused) while connecting to upstream, client: {ip}, server: {world.naming.package}.{world.domain}, '
+                    f'request: "{method} {path} HTTP/1.1", upstream: "http://127.0.0.1:{world.port}{path}", host: "{world.naming.package}.{world.domain}"')))
                 continue
             slow_window = bool(slow_start) and slow_start <= ts < slow_end
             _simulate_request(sim, ts, slow_window)
@@ -541,26 +548,26 @@ def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: rando
     for c in base_commits:
         when = util.parse_iso(c["when"]) + timedelta(minutes=rng.uniform(2, 7))
         sha = c["sha"][:7]
-        lines += _deploy_lines(when, sha, c["author"], c["message"], config_only=c["message"].startswith(("ops:", "chore: rotate")), rng=rng)
+        lines += _deploy_lines(world.naming.service, when, sha, c["author"], c["message"], config_only=c["message"].startswith(("ops:", "chore: rotate")), rng=rng)
     herring = world.extra.get("herring_deploys", [])
     if herring:
         custom = sorted((custom or []) + herring, key=lambda d: d["when"])
     if custom:
         for d in custom:
             restart_at = incident.restart_at if d.get("restart") == "restart" else None
-            lines += _deploy_lines(util.parse_iso(d["when"]), d["sha"], d["author"], d["message"], config_only=bool(d.get("config_only")),
+            lines += _deploy_lines(world.naming.service, util.parse_iso(d["when"]), d["sha"], d["author"], d["message"], config_only=bool(d.get("config_only")),
                                    rng=rng, restart_at=restart_at, restart=d.get("restart", "restart"),
                                    deps_line=d.get("deps_line"), crashed=bool(d.get("crashed")))
     elif incident and custom is None:
-        lines += _deploy_lines(incident.deploy_at, incident.deploy_commit[:7], incident.deploy_author, incident.deploy_message,
+        lines += _deploy_lines(world.naming.service, incident.deploy_at, incident.deploy_commit[:7], incident.deploy_author, incident.deploy_message,
                                config_only=True, rng=rng, restart_at=incident.restart_at)
     (world.log_dir / "deploy.log").write_text("".join(l + "\n" for l in lines))
 
 
-def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_only: bool, rng: random.Random,
+def _deploy_lines(svc: str, when: datetime, sha: str, author: str, message: str, config_only: bool, rng: random.Random,
                   restart_at: datetime | None = None, restart: str = "restart", deps_line: str | None = None,
                   crashed: bool = False) -> list[str]:
-    tag = f"[{SERVICE_NAME}]"
+    tag = f"[{svc}]"
     t = when
     out = [f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy {sha} requested by {author} ({message})"]
     t += timedelta(seconds=rng.uniform(1, 3))
@@ -579,7 +586,7 @@ def _deploy_lines(when: datetime, sha: str, author: str, message: str, config_on
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy complete in {int((t - when).total_seconds())}s")
         return out
     t = restart_at - timedelta(seconds=2.7) if restart_at else t + timedelta(seconds=rng.uniform(1, 2))
-    out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} restarting service (systemctl restart {SERVICE_NAME})")
+    out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} restarting service (systemctl restart {svc})")
     if crashed:
         t = (restart_at or t) + timedelta(seconds=rng.uniform(12, 16))
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} ERROR: service did not become active within 10s "
@@ -611,7 +618,7 @@ def _write_cron_log(world: World, incident: IncidentProfile | None, rng: random.
     burst = incident.extra.get("lock_burst") if incident else None
     if burst:
         reload_at = (util.parse_iso(burst["since"]) if burst.get("since") else incident.incident_at) - timedelta(seconds=rng.uniform(20, 70))
-        entries.append((reload_at, f"{reload_at:%Y-%m-%d %H:%M:%S} crond[{rng.randint(300, 900)}]: (*system*{SERVICE_NAME}) RELOAD (/etc/cron.d/{SERVICE_NAME})"))
+        entries.append((reload_at, f"{reload_at:%Y-%m-%d %H:%M:%S} crond[{rng.randint(300, 900)}]: (*system*{world.naming.service}) RELOAD (/etc/cron.d/{world.naming.service})"))
         burst_since = util.parse_iso(burst["since"]) if burst.get("since") else incident.incident_at
         t = burst_since.replace(second=0, microsecond=0)
         n0, n1 = orders_range

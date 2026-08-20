@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from checkout.config import settings  # noqa: E402
-from checkout.db import sqlite_path  # noqa: E402
+from __SREGYM_PKG__.config import settings  # noqa: E402
+from __SREGYM_PKG__.db import sqlite_path  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 

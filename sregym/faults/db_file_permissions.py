@@ -27,16 +27,16 @@ from sregym.faults.base import (
     standard_collateral_checks,
 )
 from sregym import util
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 _ERROR = "sqlite3.OperationalError: attempt to write a readonly database"
 
 VARIANTS = {
     "data_dir": {"rel": "data", "dir": True, "bad_mode": 0o555, "good_mode": 0o755,
                  "rule": "restrict-service-data-dirs", "tb": "sql:checkout"},
-    "core_file": {"rel": "data/checkout.db", "dir": False, "bad_mode": 0o444, "good_mode": 0o644,
+    "core_file": {"rel": "core_db", "dir": False, "bad_mode": 0o444, "good_mode": 0o644,
                   "rule": "worldwritable-db-files", "tb": "sql:checkout"},
-    "ledger_file": {"rel": "data/ledger.db", "dir": False, "bad_mode": 0o444, "good_mode": 0o644,
+    "ledger_file": {"rel": "ledger_db", "dir": False, "bad_mode": 0o444, "good_mode": 0o644,
                     "rule": "worldwritable-db-files", "tb": "sql:checkout_ledger_sql"},
 }
 
@@ -49,8 +49,11 @@ class DbFilePermissions(FaultTemplate):
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
         rng = random.Random((seed * 1_000_003) ^ 0xD8)
+        nm = world.naming
+        svc, pkg = nm.service, nm.package
         name = rng.choice(sorted(VARIANTS))
-        v = VARIANTS[name]
+        v = dict(VARIANTS[name])
+        v["rel"] = {"data": "data", "core_db": nm.core_db_rel, "ledger_db": nm.ledger_db_rel}[v["rel"]]
         target = world.repo / v["rel"]
 
         history_minutes = (world.now - world.history_start).total_seconds() / 60
@@ -64,7 +67,7 @@ class DbFilePermissions(FaultTemplate):
         world.fault = self.name
         head = world.commits[-1]
 
-        rel_from_root = f"{SERVICE_NAME}/{v['rel']}"
+        rel_from_root = f"{svc}/{v['rel']}"
         incident = IncidentProfile(
             commit_at=incident_at, deploy_at=incident_at, restart_at=incident_at, incident_at=incident_at,
             page_at=page_at, support_note_at=support_note_at, failing_endpoints=["POST /checkout"], broken_db="core",
@@ -104,14 +107,14 @@ class DbFilePermissions(FaultTemplate):
         root_cause = [
             Check("path_writable_again", "path_writable", {"path": rel_from_root, "expect_dir": v["dir"]},
                   f"{rel_from_root} is writable again"),
-            Check("env_unchanged", "files_unchanged", {"files": [f"{SERVICE_NAME}/.env"]},
+            Check("env_unchanged", "files_unchanged", {"files": [f"{svc}/.env"]},
                   "database URLs not repointed somewhere writable"),
             Check("app_code_unchanged", "files_unchanged",
-                  {"files": [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
+                  {"files": [f"{svc}/{pkg}/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
                   "application code unchanged (permissions were the problem)"),
-            Check("db_files_in_place", "path_exists", {"path": f"{SERVICE_NAME}/data/checkout.db"}, "core db at its original path"),
+            Check("db_files_in_place", "path_exists", {"path": f"{svc}/{nm.core_db_rel}"}, "core db at its original path"),
         ]
-        collateral = standard_collateral_checks(SERVICE_NAME, allow=[], rules=self.forbidden_rules)
+        collateral = standard_collateral_checks(svc, allow=[], rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
             incident=incident, allowed_changed_files=[], notes=f"variant={name} old_mode={old_mode:03o}",

@@ -1,4 +1,4 @@
-"""Configuration for checkout-service.
+"""Configuration for __SREGYM_SERVICE__.
 
 Settings are loaded once, at import time, from the ``.env`` file in the working
 directory (override the location with ``CHECKOUT_ENV_FILE``).  Real environment
@@ -15,11 +15,11 @@ from pathlib import Path
 ENV_FILE = Path(os.environ.get("CHECKOUT_ENV_FILE", ".env"))
 
 DEFAULTS: dict[str, str] = {
-    "APP_NAME": "checkout-service",
+    "APP_NAME": "__SREGYM_SERVICE__",
     "APP_ENV": "development",
     "APP_HOST": "127.0.0.1",
     "APP_PORT": "8000",
-    "DATABASE_URL": "sqlite:///data/checkout-dev.db",
+    "DATABASE_URL": "sqlite:///data/__SREGYM_PKG__-dev.db",
     #[[ ledger
     "LEDGER_DATABASE_URL": "sqlite:///data/ledger-dev.db",
     #]] ledger

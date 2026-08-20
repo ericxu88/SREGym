@@ -36,6 +36,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         workdir=Path(args.workdir) if args.workdir else None, keep_world=args.keep_world,
         history_minutes=args.history_minutes, out_dir=Path(args.out) if args.out else None,
         live_traffic=not args.no_traffic, prompt_style=args.prompt_style, difficulty=args.difficulty,
+        stack=args.stack,
     )
     result = run_episode(agent, config, verbose=not args.quiet)
     print()
@@ -132,7 +133,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     from sregym.harness.prompts import build_task_prompt
 
     root = Path(args.workdir) / f"world-seed{args.seed}-{time.strftime('%Y%m%d-%H%M%S')}" if args.workdir else None
-    world, spec = prepare_world(args.seed, args.fault, root=root, history_minutes=args.history_minutes)
+    world, spec = prepare_world(args.seed, args.fault, root=root, history_minutes=args.history_minutes, stack=args.stack)
     print(f"world:     {world.base}   (control plane: {world.control_dir})")
     print(f"host root: {world.root}")
     print(f"repo:      {world.repo}")
@@ -177,7 +178,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         fault=args.fault, max_steps=_resolve_steps(args), token_budget=args.token_budget, concurrency=args.concurrency,
         history_minutes=args.history_minutes, live_traffic=not args.no_traffic, retries=args.retries, rerun=args.rerun,
         keep_worlds=args.keep_worlds, prompt_style=args.prompt_style, episode_timeout_s=args.episode_timeout,
-        difficulty=args.difficulty,
+        difficulty=args.difficulty, stack=args.stack,
     )
     summary = run_sweep(cfg)
     if summary.get("n_model_results"):
@@ -235,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-steps", type=int, default=None, help="explicit step budget (default: the difficulty profile's)")
     r.add_argument("--difficulty", choices=["baseline", "standard", "hard"], default="baseline",
                     help="difficulty profile: red herrings + default step budget")
+    r.add_argument("--stack", default="auto", help='stack identity: "auto" = seeded per-world variant (default), "classic" = the original checkout-service, or a variant service name')
     r.add_argument("--prompt-style", choices=["full", "lean"], default="full", help="system prompt variant (lean = no spelled-out resolution norms)")
     r.add_argument("--token-budget", type=int, default=400_000)
     r.add_argument("--history-minutes", type=int, default=180)
@@ -265,6 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--fault", default="env_var_typo")
     g.add_argument("--workdir", help="parent directory for the world (default: system temp)")
     g.add_argument("--history-minutes", type=int, default=180)
+    g.add_argument("--stack", default="auto", help='stack identity: "auto" = seeded per-world variant (default), "classic" = the original checkout-service, or a variant service name')
     g.add_argument("--serve", action="store_true", help="start the service + traffic and wait for Ctrl-C")
     g.add_argument("--traffic-rps", type=float, default=1.5)
     g.add_argument("--no-traffic", action="store_true")
@@ -282,6 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
     sw.add_argument("--mode", default="solve", help="scripted agent mode")
     sw.add_argument("--max-steps", type=int, default=None, help="explicit step budget (default: the difficulty profile's)")
+    sw.add_argument("--stack", default="auto", help='stack identity: "auto" = seeded per-world variant (default), "classic" = the original checkout-service, or a variant service name')
     sw.add_argument("--difficulty", choices=["baseline", "standard", "hard"], default="baseline",
                     help="difficulty profile: red herrings + default step budget")
     sw.add_argument("--prompt-style", choices=["full", "lean"], default="full")

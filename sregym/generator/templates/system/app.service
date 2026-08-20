@@ -1,5 +1,5 @@
 [Unit]
-Description=checkout-service (FastAPI/uvicorn)
+Description=__SREGYM_SERVICE__ (FastAPI/uvicorn)
 After=network.target
 
 [Service]
@@ -7,7 +7,7 @@ Type=simple
 User=app
 Group=app
 WorkingDirectory=__SREGYM_REPO__
-ExecStart=__SREGYM_PYTHON__ -m checkout.serve
+ExecStart=__SREGYM_PYTHON__ -m __SREGYM_PKG__.serve
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGTERM

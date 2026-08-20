@@ -22,10 +22,7 @@ from sregym.faults.base import (
     DEFAULT_FORBIDDEN_RULES, Check, FaultTemplate, IncidentProfile, VerificationSpec, register,
     standard_collateral_checks,
 )
-from sregym.generator.world import SERVICE_NAME, World
-
-CRON_FILE = f"etc/cron.d/{SERVICE_NAME}"
-CORE = f"{SERVICE_NAME}/data/checkout.db"
+from sregym.generator.world import World
 _COMMENTS = [
     "# OPS-77: orders archive backfill -- retry every minute until the backlog is gone (temporary)",
     "# OPS-77 archive backfill, remove after 2026-08-21",
@@ -41,6 +38,10 @@ class CronWriteLock(FaultTemplate):
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
         rng = random.Random((seed * 1_000_003) ^ 0xC404)
+        nm = world.naming
+        svc = nm.service
+        cron_file = f"etc/cron.d/{svc}"
+        core = f"{svc}/{nm.core_db_rel}"
         # the lock is held for as long as the script's verification pass takes (depends on order count)
         hold_s = round(world.max_order_id * 0.006 + 0.4, 1)
         history_minutes = (world.now - world.history_start).total_seconds() / 60
@@ -50,7 +51,7 @@ class CronWriteLock(FaultTemplate):
         support_note_at = page_at + timedelta(minutes=rng.uniform(3, 8))
 
         # ---------------------------------------------------------------- the cron entry
-        cron_path = world.root / CRON_FILE
+        cron_path = world.root / cron_file
         text = cron_path.read_text()
         comment = rng.choice(_COMMENTS)
         line = f"*     *  *   *   *    app   cd {world.repo} && {world.python} scripts/archive_orders.py >> logs/cron.log 2>&1  {comment}\n"
@@ -72,8 +73,8 @@ class CronWriteLock(FaultTemplate):
             error_message="sqlite3.OperationalError: database is locked", health_degraded=False,
             deploy_commit=head["sha"], deploy_message=head["message"], deploy_author=head["author"], config_warnings=[],
             root_cause_summary=(
-                f"A cron entry added to {CRON_FILE} at {reload_at:%H:%M} runs scripts/archive_orders.py every minute; each run "
-                f"holds a write transaction on data/checkout.db for ~{hold_s:.0f}s, so POST /checkout fails with 'database is "
+                f"A cron entry added to {cron_file} at {reload_at:%H:%M} runs scripts/archive_orders.py every minute; each run "
+                f"holds a write transaction on {nm.core_db_rel} for ~{hold_s:.0f}s, so POST {nm.checkout_route} fails with 'database is "
                 f"locked' after the 5s busy timeout during those windows. Fix: remove or comment out the entry (or schedule it "
                 "once a day, off-hours). No restart or code change is needed."
             ),
@@ -96,7 +97,7 @@ class CronWriteLock(FaultTemplate):
             Check("checkouts_stay_up_for_a_window", "probe_window",
                   {"seconds": 65, "interval": 5, "method": "POST", "path": "/checkout", "expect_status": [201],
                    "body": {"user_id": probe_user, "items": probe_items, "payment_method": "card"},
-                   "log": f"{SERVICE_NAME}/logs/app.log", "forbid_pattern": "database is locked", "lock_db": CORE, "lock_wait_s": 60},
+                   "log": f"{svc}/logs/app.log", "forbid_pattern": "database is locked", "lock_db": core, "lock_wait_s": 60},
                   "POST /checkout succeeds every 5s for 65s and no new 'database is locked' errors are logged"),
         ]
         # Root cause is the SCHEDULE alone. Editing the job script or bumping app timeouts alongside a
@@ -104,13 +105,13 @@ class CronWriteLock(FaultTemplate):
         # manifest check (allow = only the cron file) already catches those edits at the 0.5 tier.
         # (A script/app edit *instead of* fixing the schedule still fails cron_entry_disabled.)
         root_cause = [
-            Check("cron_entry_disabled", "cron_job_disabled", {"file": CRON_FILE, "script": "archive_orders.py"},
+            Check("cron_entry_disabled", "cron_job_disabled", {"file": cron_file, "script": "archive_orders.py"},
                   "the archive job is no longer scheduled to run during business hours"),
         ]
-        collateral = standard_collateral_checks(SERVICE_NAME, allow=[CRON_FILE], rules=self.forbidden_rules)
+        collateral = standard_collateral_checks(svc, allow=[cron_file], rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
-            incident=incident, allowed_changed_files=[CRON_FILE], notes=f"hold_s={hold_s} comment={_COMMENTS.index(comment)}",
+            incident=incident, allowed_changed_files=[cron_file], notes=f"hold_s={hold_s} comment={_COMMENTS.index(comment)}",
         )
         world.extra["fault_params"] = {"target": "cron:archive_orders", "kind": "every_minute", "hold_s": hold_s,
                                        "comment_variant": _COMMENTS.index(comment), "innocent_change": None}
@@ -121,17 +122,19 @@ class CronWriteLock(FaultTemplate):
     def render_page(self, world: World, incident: IncidentProfile, rng) -> str:
         from sregym.harness.prompts import page_footer
 
+        nm = world.naming
+        svc, cr, pfx = nm.service, nm.checkout_route, nm.route_prefix
         since = incident.incident_at.strftime("%H:%M")
         share = int(100 * incident.extra["lock_burst"]["duration_s"] / 60)
         incident_no = 4000 + rng.randint(100, 899)
         ticket = 70000 + rng.randint(1000, 8999)
         titles = [
-            f"[P1] {SERVICE_NAME}: POST /checkout 5xx spiking in bursts (~{share}% of each minute) since {since} UTC",
-            f"[P1] {SERVICE_NAME} checkout error rate flapping above threshold since {since} UTC",
-            f"[SEV1] intermittent checkout failures on {SERVICE_NAME} — errors come and go every minute",
+            f"[P1] {svc}: POST {cr} 5xx spiking in bursts (~{share}% of each minute) since {since} UTC",
+            f"[P1] {svc} checkout error rate flapping above threshold since {since} UTC",
+            f"[SEV1] intermittent checkout failures on {svc} — errors come and go every minute",
         ]
         details = [
-            f"5xx on POST /checkout arrives in regular bursts since {since} UTC; reads (GET /orders, /users) and /health are unaffected. Alert has flapped {rng.randint(9, 25)} times.",
+            f"5xx on POST {cr} arrives in regular bursts since {since} UTC; reads (GET {pfx}/orders, {pfx}/users) and /health are unaffected. Alert has flapped {rng.randint(9, 25)} times.",
             f"Checkout p99 latency pinned at ~5s during the bursts, then recovers. Started {since} UTC. No deploy in the window per the release calendar.",
             f"Error rate oscillates between ~0% and ~100% on a sub-minute cadence since {since} UTC; other endpoints healthy.",
         ]
@@ -143,10 +146,10 @@ class CronWriteLock(FaultTemplate):
         ack = incident.page_at + (world.now - incident.page_at) * rng.uniform(0.2, 0.5)
         lines = [
             f"[PagerDuty] INCIDENT #{incident_no} — TRIGGERED — P1",
-            f"Service:      {SERVICE_NAME} (production)   Escalation policy: payments-oncall → you",
+            f"Service:      {svc} (production)   Escalation policy: payments-oncall → you",
             f"Title:        {rng.choice(titles)}",
             f"Triggered at: {incident.page_at:%Y-%m-%d %H:%M:%S} UTC   (alert has been flapping since {since} UTC)",
-            'Alert rule:   sum(rate(http_requests_total{path="/checkout",status=~"5.."}[1m])) / sum(rate(http_requests_total{path="/checkout"}[1m])) > 0.10',
+            f'Alert rule:   sum(rate(http_requests_total{{path="{cr}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{path="{cr}"}}[1m])) > 0.10',
             f"Details:      {rng.choice(details)}",
             f"Support note ({incident.support_note_at:%H:%M} UTC, Zendesk #{ticket}): \"{rng.choice(notes).format(since=since)}\"",
             "Runbook:      (none linked)",

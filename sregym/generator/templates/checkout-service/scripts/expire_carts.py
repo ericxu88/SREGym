@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Expire abandoned carts. Run from the repo root by cron every 15 minutes:
 
-    */15 * * * *  cd /srv/checkout-service && python scripts/expire_carts.py >> logs/cron.log 2>&1
+    */15 * * * *  cd /srv/__SREGYM_SERVICE__ && python scripts/expire_carts.py >> logs/cron.log 2>&1
 """
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from checkout.config import settings  # noqa: E402
-from checkout.db import core_db  # noqa: E402
+from __SREGYM_PKG__.config import settings  # noqa: E402
+from __SREGYM_PKG__.db import core_db  # noqa: E402
 
 
 def main() -> int:

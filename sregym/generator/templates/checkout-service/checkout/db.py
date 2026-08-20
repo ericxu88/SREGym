@@ -14,7 +14,7 @@ from typing import Iterator
 from . import telemetry
 from .config import settings
 
-log = logging.getLogger("checkout.db")
+log = logging.getLogger("__SREGYM_PKG__.db")
 
 
 class ConfigurationError(RuntimeError):

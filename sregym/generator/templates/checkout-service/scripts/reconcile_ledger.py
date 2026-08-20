@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Ledger reconciliation for checkout-service.
+"""Ledger reconciliation for __SREGYM_SERVICE__.
 
 Compares confirmed orders in the core database with payments in the ledger and reports
 orders that have no ledger payment. Optionally copies the missing payments from another
@@ -23,8 +23,8 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from checkout.config import settings  # noqa: E402
-from checkout.db import sqlite_path  # noqa: E402
+from __SREGYM_PKG__.config import settings  # noqa: E402
+from __SREGYM_PKG__.db import sqlite_path  # noqa: E402
 
 PAYMENT_COLS = ("order_id", "user_id", "amount_cents", "currency", "method", "status", "gateway_ref", "created_at")
 

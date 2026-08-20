@@ -37,6 +37,7 @@ class EpisodeConfig:
     now: datetime | None = None
     prompt_style: str = "full"  # see harness.prompts.PROMPT_STYLES
     difficulty: str = "baseline"  # see scenario.PROFILES (red herrings; also the default step budget)
+    stack: str = "auto"  # stack identity: auto (seeded), classic, or a variant service name
 
 
 @dataclass
@@ -112,7 +113,8 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
     if config.workdir:
         root = Path(config.workdir) / f"world-seed{config.seed}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S%f}"
     world, spec = prepare_world(config.seed, config.fault, root=root, now=config.now,
-                                history_minutes=config.history_minutes, difficulty=config.difficulty)
+                                history_minutes=config.history_minutes, difficulty=config.difficulty,
+                                stack=config.stack)
     out_dir = Path(config.out_dir) if config.out_dir else Path("runs") / f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-seed{config.seed}-{agent.name}"
     out_dir.mkdir(parents=True, exist_ok=True)
     traj_path = out_dir / "trajectory.jsonl"
@@ -147,7 +149,8 @@ def run_episode(agent: AgentAdapter, config: EpisodeConfig, registry: ToolRegist
         if not service_dead and "listening" not in start_msg:
             infra_error = f"service did not start: {start_msg}"
             raise RuntimeError(infra_error)
-        agent.start(system_prompt, task_prompt, registry.specs())
+        agent.bind_world(world)
+        agent.start(system_prompt, task_prompt, registry.specs(ctx))
         observation = task_prompt
         step_no = 0
         nudged = False

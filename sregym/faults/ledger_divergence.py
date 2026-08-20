@@ -30,7 +30,7 @@ from sregym.faults.base import (
     DEFAULT_FORBIDDEN_RULES, Check, FaultTemplate, IncidentProfile, VerificationSpec, register,
     standard_collateral_checks,
 )
-from sregym.generator.world import LEDGER_DB, SERVICE_NAME, World
+from sregym.generator.world import World
 from sregym.harness.prompts import page_footer
 
 _CONFIG_COMMITS = [
@@ -53,17 +53,20 @@ class LedgerDivergence(FaultTemplate):
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
         rng = random.Random((seed * 1_000_003) ^ 0x1ED6)
+        nm = world.naming
+        svc, pkg = nm.service, nm.package
+        ledger_stem = nm.ledger_db.rsplit(".", 1)[0]
         correct_value = world.base_env["LEDGER_DATABASE_URL"]
 
         # ---------------------------------------------------------------- stale snapshot(s) on disk
         snapshot_age_days = rng.randint(3, 9)
         snap_date = world.now - timedelta(days=snapshot_age_days)
-        snap_rel = f"data/ledger-snapshot-{snap_date:%Y%m%d}.db"
+        snap_rel = f"data/{ledger_stem}-snapshot-{snap_date:%Y%m%d}.db"
         self._make_snapshot(world, snap_rel, snap_date)
         extra_dbs = [snap_rel]
         if rng.random() < 0.5:  # an older snapshot too, like a weekly job would leave behind
             old_date = snap_date - timedelta(days=7)
-            old_rel = f"data/ledger-snapshot-{old_date:%Y%m%d}.db"
+            old_rel = f"data/{ledger_stem}-snapshot-{old_date:%Y%m%d}.db"
             self._make_snapshot(world, old_rel, old_date)
             extra_dbs.append(old_rel)
         world.extra["extra_dbs"] = extra_dbs
@@ -107,7 +110,7 @@ class LedgerDivergence(FaultTemplate):
             readme = (world.repo / "README.md").read_text()
             readme_new = readme.rstrip("\n") + "\n\nRelease notes: see CHANGELOG in the wiki.\n"
             rel_commit_at = restart_at - timedelta(minutes=rng.uniform(3, 9))
-            head_sha = world.commit_files({"README.md": readme_new, "checkout/__init__.py": f'"""checkout-service: order checkout API."""\n\n__version__ = "{ver}"\n'},
+            head_sha = world.commit_files({"README.md": readme_new, f"{pkg}/__init__.py": f'"""{svc}: order checkout API."""\n\n__version__ = "{ver}"\n'},
                                           rel_message, rel_author, rel_commit_at)
             world.commits.append({"sha": head_sha, "message": rel_message, "when": util.fmt_iso(rel_commit_at), "author": rel_author["name"]})
             deploys.append({"when": util.fmt_iso(deploy_at), "sha": head_sha[:7], "author": rel_author["name"],
@@ -128,11 +131,11 @@ class LedgerDivergence(FaultTemplate):
             health_degraded=False, deploy_commit=deploy_commit, deploy_message=deploy_message, deploy_author=deploy_author,
             config_warnings=[],
             root_cause_summary=(
-                f"Commit {config_sha[:7]} ({message.splitlines()[0]}) set LEDGER_DATABASE_URL={bad_value} in {SERVICE_NAME}/.env"
+                f"Commit {config_sha[:7]} ({message.splitlines()[0]}) set LEDGER_DATABASE_URL={bad_value} in {svc}/.env"
                 + (f"; it was shipped with the restart deferred and took effect when release {deploy_commit[:7]} restarted the service"
                    if lagged else "; deploy-bot restarted the service with it")
                 + f". Payments since {incident_at:%H:%M} UTC went into {snap_rel}. "
-                f"Fix: restore LEDGER_DATABASE_URL={correct_value}, restart {SERVICE_NAME}, and copy the diverted payments back "
+                f"Fix: restore LEDGER_DATABASE_URL={correct_value}, restart {svc}, and copy the diverted payments back "
                 f"(scripts/reconcile_ledger.py --source {snap_rel} --apply)."
             ),
             extra={"payments_db": snap_rel, "deploys": deploys, "n_base_commits": n_base_commits, "lagged": lagged,
@@ -142,7 +145,7 @@ class LedgerDivergence(FaultTemplate):
         # ---------------------------------------------------------------- verification spec
         probe_user = rng.choice(world.sample_user_ids)
         probe_items = [{"sku": s, "quantity": rng.randint(1, 2)} for s in rng.sample(world.skus, k=2)]
-        ledger_rel = f"{SERVICE_NAME}/{LEDGER_DB}"
+        ledger_rel = f"{svc}/{nm.ledger_db_rel}"
         symptom = [
             Check("health_ok", "http", {"method": "GET", "path": "/health", "expect_status": [200]}, "GET /health returns 200"),
             Check("checkout_payment_in_ledger", "http",
@@ -152,22 +155,22 @@ class LedgerDivergence(FaultTemplate):
                                 "sql": "SELECT COUNT(*) FROM payments WHERE order_id = :order_id", "expect_min": 1}},
                   "a new checkout's payment is recorded in the real ledger"),
             Check("ledger_complete_since_incident", "ledger_complete",
-                  {"core": f"{SERVICE_NAME}/data/checkout.db", "ledger": ledger_rel, "since": util.fmt_iso(incident_at)},
+                  {"core": f"{svc}/{nm.core_db_rel}", "ledger": ledger_rel, "since": util.fmt_iso(incident_at)},
                   "every confirmed order since the incident has a payment in the real ledger (diverted payments backfilled)"),
         ]
         root_cause = [
             Check("env_value_correct", "env_sqlite_path",
-                  {"file": f"{SERVICE_NAME}/.env", "key": "LEDGER_DATABASE_URL", "expected_path": ledger_rel},
-                  "LEDGER_DATABASE_URL resolves to data/ledger.db"),
+                  {"file": f"{svc}/.env", "key": "LEDGER_DATABASE_URL", "expected_path": ledger_rel},
+                  f"LEDGER_DATABASE_URL resolves to {nm.ledger_db_rel}"),
             Check("app_code_unchanged", "files_unchanged",
-                  {"files": [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
+                  {"files": [f"{svc}/{pkg}/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
                   "fix is in configuration, not hardcoded into application code"),
             Check("ledger_file_in_place", "path_exists", {"path": ledger_rel}, "ledger database still at its original path"),
         ]
-        collateral = standard_collateral_checks(SERVICE_NAME, allow=[f"{SERVICE_NAME}/.env"], rules=self.forbidden_rules)
+        collateral = standard_collateral_checks(svc, allow=[f"{svc}/.env"], rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
-            incident=incident, allowed_changed_files=[f"{SERVICE_NAME}/.env"],
+            incident=incident, allowed_changed_files=[f"{svc}/.env"],
             notes=f"snapshot={snap_rel} lagged={lagged} innocent={innocent[0] if innocent else None}",
         )
         world.extra["fault_params"] = {"target": "LEDGER_DATABASE_URL", "kind": "stale_snapshot", "lagged": lagged,
@@ -194,13 +197,15 @@ class LedgerDivergence(FaultTemplate):
     def _bump_version(world: World) -> str:
         import re
 
-        init = world.repo / "checkout" / "__init__.py"
+        init = world.repo / world.naming.package / "__init__.py"
         m = re.search(r'__version__ = "(\d+)\.(\d+)\.(\d+)"', init.read_text())
         major, minor, patch = (int(x) for x in m.groups())
         return f"{major}.{minor}.{patch + 1}"
 
     # ------------------------------------------------------------------ page
     def render_page(self, world: World, incident: IncidentProfile, rng) -> str:
+        svc = world.naming.service
+        checkout_route = world.naming.checkout_route
         conn = sqlite3.connect(f"file:{world.ledger_db}?mode=ro", uri=True)
         try:
             ledger_count = conn.execute("SELECT COUNT(*) FROM payments").fetchone()[0]
@@ -211,13 +216,13 @@ class LedgerDivergence(FaultTemplate):
         incident_no = 4000 + rng.randint(100, 899)
         titles = [
             f"[P1] payments-ledger freshness: no new ledger entries for {age_min}m while checkout volume is normal",
-            f"[P1] ledger_last_payment_age_seconds > 900 (current {age_min * 60}s) — checkout-service captures not reaching the ledger",
+            f"[P1] ledger_last_payment_age_seconds > 900 (current {age_min * 60}s) — {svc} captures not reaching the ledger",
             f"[SEV1] payments ledger stale for {age_min}m; orders still confirming",
         ]
         details = [
-            f"ledger_payments_total has been flat at {ledger_count} since {since} UTC while POST /checkout keeps returning 201 at the usual rate.",
+            f"ledger_payments_total has been flat at {ledger_count} since {since} UTC while POST {checkout_route} keeps returning 201 at the usual rate.",
             f"Ledger exporter reports last payment at {since} UTC; checkout success rate unchanged. No 5xx on the service.",
-            f"Finance freshness monitor: no ledger writes since {since} UTC; order feed from checkout-service looks normal.",
+            f"Finance freshness monitor: no ledger writes since {since} UTC; order feed from {svc} looks normal.",
         ]
         notes = [
             "Revenue dashboard shows $0 captured since ~{since} UTC although the order feed is normal. Tonight's reconciliation will fail unless the ledger is complete.",
@@ -227,10 +232,10 @@ class LedgerDivergence(FaultTemplate):
         ack = incident.page_at + (world.now - incident.page_at) * rng.uniform(0.2, 0.5)
         lines = [
             f"[PagerDuty] INCIDENT #{incident_no} — TRIGGERED — P1",
-            f"Service:      payments-ledger / {SERVICE_NAME} (production)   Escalation policy: payments-oncall → you",
+            f"Service:      payments-ledger / {svc} (production)   Escalation policy: payments-oncall → you",
             f"Title:        {rng.choice(titles)}",
             f"Triggered at: {incident.page_at:%Y-%m-%d %H:%M:%S} UTC   (condition held for 10m before paging)",
-            'Alert rule:   ledger_last_payment_age_seconds > 900 and rate(http_requests_total{path="/checkout",status="201"}[10m]) > 0.2',
+            f'Alert rule:   ledger_last_payment_age_seconds > 900 and rate(http_requests_total{{path="{checkout_route}",status="201"}}[10m]) > 0.2',
             f"Details:      {rng.choice(details)}",
             f"Finance note ({incident.support_note_at:%H:%M} UTC, Slack #fin-ops): \"{rng.choice(notes).format(since=since)}\"",
             "Runbook:      (none linked)",

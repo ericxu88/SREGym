@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from sregym import util
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 _MANAGERS: list["ServiceManager"] = []
 
@@ -35,6 +35,7 @@ class ServiceManager:
 
     def __init__(self, world: World):
         self.world = world
+        self.svc = world.naming.service
         self.proc: subprocess.Popen | None = None
         self.started_at: datetime | None = None
         self.events: list[str] = []
@@ -65,7 +66,7 @@ class ServiceManager:
     def start(self, wait: bool = True, timeout: float = 15.0, announce: bool = True) -> str:
         """Start the service; if it exits immediately, retry up to START_LIMIT times (crash-loop), then fail."""
         if self.is_running():
-            return f"{SERVICE_NAME} is already running (pid {self.pid})"
+            return f"{self.svc} is already running (pid {self.pid})"
         last = ""
         for attempt in range(1, self.START_LIMIT + 1):
             last = self._start_once(wait=wait, timeout=timeout, announce=announce and attempt == 1)
@@ -73,11 +74,11 @@ class ServiceManager:
                 if attempt > 1:
                     last += f" (after {attempt} attempts)"
                 return last
-            self._log_event(f"{SERVICE_NAME} exited with code {self.proc.returncode if self.proc else '?'} "
+            self._log_event(f"{self.svc} exited with code {self.proc.returncode if self.proc else '?'} "
                             f"(attempt {attempt}/{self.START_LIMIT}); restarting in 2s")
             time.sleep(0.4)
-        self._log_event(f"{SERVICE_NAME}: start limit exceeded ({self.START_LIMIT} rapid failures); giving up (Result: start-limit-hit)")
-        return (f"{SERVICE_NAME} failed to start: crashed {self.START_LIMIT} times in a row "
+        self._log_event(f"{self.svc}: start limit exceeded ({self.START_LIMIT} rapid failures); giving up (Result: start-limit-hit)")
+        return (f"{self.svc} failed to start: crashed {self.START_LIMIT} times in a row "
                 f"(last exit code {self.proc.returncode if self.proc else '?'}); start limit exceeded. "
                 f"See {util.relpath(self.world.app_log, self.world.root)} for the crash output.")
 
@@ -97,7 +98,7 @@ class ServiceManager:
         log_fh = open(world.app_log, "a")
         try:
             self.proc = subprocess.Popen(
-                [world.python, "-m", "checkout.serve"],
+                [world.python, "-m", f"{world.naming.package}.serve"],
                 cwd=world.repo, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
@@ -105,27 +106,27 @@ class ServiceManager:
             log_fh.close()
         self.started_at = datetime.now(timezone.utc)
         if announce:
-            self._log_event(f"starting {SERVICE_NAME} (pid {self.proc.pid})")
+            self._log_event(f"starting {self.svc} (pid {self.proc.pid})")
         if not wait:
-            return f"{SERVICE_NAME} starting (pid {self.proc.pid})"
+            return f"{self.svc} starting (pid {self.proc.pid})"
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 time.sleep(0.15)  # let the crash output finish flushing to the log
-                return (f"{SERVICE_NAME} exited immediately with code {self.proc.returncode} "
+                return (f"{self.svc} exited immediately with code {self.proc.returncode} "
                         f"(see {util.relpath(world.app_log, world.root)})")
             if util.port_open(world.port):
-                return f"{SERVICE_NAME} started (pid {self.proc.pid}), listening on 127.0.0.1:{world.port}"
+                return f"{self.svc} started (pid {self.proc.pid}), listening on 127.0.0.1:{world.port}"
             time.sleep(0.1)
-        return f"{SERVICE_NAME} started (pid {self.proc.pid}) but port {world.port} not accepting connections after {timeout:.0f}s"
+        return f"{self.svc} started (pid {self.proc.pid}) but port {world.port} not accepting connections after {timeout:.0f}s"
 
     def stop(self, timeout: float = 10.0) -> str:
         if not self.proc:
-            return f"{SERVICE_NAME} is not running"
+            return f"{self.svc} is not running"
         if self.proc.poll() is not None:
             code = self.proc.returncode
             self.proc = None
-            return f"{SERVICE_NAME} was not running (last exit code {code})"
+            return f"{self.svc} was not running (last exit code {code})"
         pid = self.proc.pid
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -133,14 +134,14 @@ class ServiceManager:
             pass
         try:
             self.proc.wait(timeout=timeout)
-            msg = f"{SERVICE_NAME} stopped (pid {pid})"
+            msg = f"{self.svc} stopped (pid {pid})"
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(os.getpgid(pid), signal.SIGKILL)
             except ProcessLookupError:
                 pass
             self.proc.wait(timeout=5)
-            msg = f"{SERVICE_NAME} did not stop within {timeout:.0f}s; killed (pid {pid})"
+            msg = f"{self.svc} did not stop within {timeout:.0f}s; killed (pid {pid})"
         self.proc = None
         self._log_event(msg)
         try:
@@ -157,7 +158,7 @@ class ServiceManager:
 
     def status(self) -> str:
         pid = self.pid
-        lines = [f"● {SERVICE_NAME} - checkout-service (FastAPI/uvicorn)"]
+        lines = [f"● {self.svc} - {self.svc} (FastAPI/uvicorn)"]
         if pid is None:
             if self.proc is not None and self.proc.returncode not in (None, 0, -15):
                 lines.append("   Active: failed (Result: start-limit-hit)" if self.events and "start limit" in self.events[-1]
@@ -168,7 +169,7 @@ class ServiceManager:
         else:
             up = (datetime.now(timezone.utc) - self.started_at).total_seconds() if self.started_at else 0
             lines.append(f"   Active: active (running) since {self.started_at:%Y-%m-%d %H:%M:%S} UTC; {int(up)}s ago")
-            lines.append(f" Main PID: {pid} (python -m checkout.serve)")
+            lines.append(f" Main PID: {pid} (python -m {self.world.naming.package}.serve)")
             lines.append(f"   Listen: 127.0.0.1:{self.world.port} ({'open' if util.port_open(self.world.port) else 'not accepting connections'})")
         status, body = util.http_request("GET", f"{self.world.base_url}/health", timeout=3)
         body = body.strip().replace("\n", " ")

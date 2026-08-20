@@ -11,7 +11,7 @@ import random
 from datetime import timedelta
 
 from sregym import util
-from sregym.generator.world import SERVICE_NAME, World
+from sregym.generator.world import World
 
 # (key, old-must-startwith, new-value, commit message, deploy restart mode)
 _DECOY_ENV_CHANGES = [
@@ -25,7 +25,7 @@ _DECOY_ENV_CHANGES = [
 
 _DECOY_CRON_LINES = [
     "50    *  *   *   *    app   find {repo}/logs -name '*.log' -size +512M -print >> logs/cron.log 2>&1  # OPS-471 disk watch",
-    "5     *  *   *   *    app   cd {repo} && sqlite3 data/checkout.db 'PRAGMA quick_check;' >> logs/cron.log 2>&1  # integrity spot-check (OPS-468)",
+    "5     *  *   *   *    app   cd {repo} && sqlite3 {core_db} 'PRAGMA quick_check;' >> logs/cron.log 2>&1  # integrity spot-check (OPS-468)",
 ]
 
 _CHATTER = [
@@ -81,8 +81,8 @@ def _decoy_deploy(world: World, rng: random.Random) -> None:
 
 def _decoy_cron(world: World, rng: random.Random) -> None:
     """A recently added (harmless) cron entry: fresh file mtime, suspicious-looking line."""
-    cron = world.root / "etc" / "cron.d" / SERVICE_NAME
-    line = rng.choice(_DECOY_CRON_LINES).format(repo=world.repo)
+    cron = world.root / "etc" / "cron.d" / world.naming.service
+    line = rng.choice(_DECOY_CRON_LINES).format(repo=world.repo, core_db=world.naming.core_db_rel)
     cron.write_text(cron.read_text().rstrip("\n") + "\n" + line + "\n")
     when = _window_time(world, 0.3, 0.7, rng)
     import os

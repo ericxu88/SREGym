@@ -18,8 +18,8 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from checkout.config import settings  # noqa: E402
-from checkout.db import sqlite_path  # noqa: E402
+from __SREGYM_PKG__.config import settings  # noqa: E402
+from __SREGYM_PKG__.db import sqlite_path  # noqa: E402
 
 ARCHIVE_PATH = "data/orders_archive.db"
 VERIFY_SECONDS_PER_ROW = 0.006  # row checksum + archive consistency check

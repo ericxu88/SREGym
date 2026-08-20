@@ -127,9 +127,8 @@ class ComposedFault(FaultTemplate):
                        + prefixed(specs[1].root_cause_checks, names[1], specs[0].allowed_changed_files))
         allow = sorted(set(specs[0].allowed_changed_files) | set(specs[1].allowed_changed_files))
         from sregym.faults.base import standard_collateral_checks
-        from sregym.generator.world import SERVICE_NAME
 
-        collateral = standard_collateral_checks(SERVICE_NAME, allow=allow, rules=self.forbidden_rules)
+        collateral = standard_collateral_checks(world.naming.service, allow=allow, rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root, collateral_checks=collateral,
             incident=merged, allowed_changed_files=allow, notes=f"pair={pair_name} members={names}",

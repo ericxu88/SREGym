@@ -77,8 +77,8 @@ class ReadLogsTool(Tool):
         "Read a log file page by page (max 50 lines per call). Call with no path to list available log files. "
         "Use grep (regex, case-sensitive; prefix (?i) to ignore case), since/until (UTC 'HH:MM' or 'YYYY-MM-DD HH:MM:SS') and tail=true to focus; "
         "pass the returned next_cursor to continue in the same direction with the same filters. "
-        "Log files: checkout-service/logs/app.log (application + access log), checkout-service/logs/deploy.log, "
-        "checkout-service/logs/cron.log, var/log/nginx/access.log, var/log/nginx/error.log."
+        "Log files: {service}/logs/app.log (application + access log), {service}/logs/deploy.log, "
+        "{service}/logs/cron.log, var/log/nginx/access.log, var/log/nginx/error.log."
     )
     input_schema = {
         "type": "object",

@@ -46,7 +46,7 @@ class QueryMetricsTool(Tool):
         "available metrics and labels. Metrics: http_requests_total{method,path,status}, http_request_duration_ms_sum/_count{path}, "
         "db_errors_total{db}, up, ledger_payments_total, ledger_last_payment_age_seconds (finance ledger exporter), "
         "plus derived http_error_rate and http_request_duration_ms_avg. "
-        "Use group_by to split by a label (e.g. status, path) and filters to restrict (e.g. {\"path\": \"/checkout\"})."
+        "Use group_by to split by a label (e.g. status, path) and filters to restrict (e.g. {\"path\": \"{checkout_route}\"})."
     )
     input_schema = {
         "type": "object",
@@ -56,7 +56,7 @@ class QueryMetricsTool(Tool):
             "until": {"type": "string", "description": "End of the window as UTC 'HH:MM' or 'YYYY-MM-DD HH:MM' (default now)."},
             "step_minutes": {"type": "integer", "minimum": 1, "maximum": 60, "description": "Bucket size in minutes (default 1; auto-widened for long windows)."},
             "group_by": {"type": "string", "description": "Label to split columns by, e.g. status, path, method, db."},
-            "filters": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Label filters, e.g. {\"path\": \"/checkout\", \"status\": \"500\"}."},
+            "filters": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Label filters, e.g. {\"path\": \"{checkout_route}\", \"status\": \"500\"}."},
         },
         "required": [],
     }

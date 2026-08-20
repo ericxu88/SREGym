@@ -33,6 +33,10 @@ class AgentTurn:
 class AgentAdapter:
     name: str = "base"
 
+    def bind_world(self, world) -> None:  # noqa: ANN001 - harness hook
+        """Called by the harness before start() with the generated world. LLM adapters ignore it;
+        scripted/test agents may read the world's stack naming from it."""
+
     def start(self, system_prompt: str, task_prompt: str, tool_specs: list[dict[str, Any]]) -> None:
         raise NotImplementedError
 

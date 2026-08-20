@@ -216,7 +216,7 @@ def _validate_python(argv: list[str], ctx: ToolContext) -> list[str]:
     arguments given relative to the host root are made absolute so they keep working."""
     world = ctx.world
     if len(argv) < 2 or argv[1].startswith("-"):
-        raise ToolError("python may only run an ops script shipped with the repo: python checkout-service/scripts/<name>.py [args]")
+        raise ToolError(f"python may only run an ops script shipped with the repo: python {world.naming.service}/scripts/<name>.py [args]")
     script = argv[1]
     candidates = [world.root / script, world.repo / script]
     full = next((c.resolve() for c in candidates if c.is_file()), None)
@@ -246,14 +246,14 @@ class RunShellTool(Tool):
     description = (
         "Run a read-mostly shell command in the host root (working directory). Allowed: common inspection commands "
         "(cat, grep, ls, find, head, tail, wc, diff, stat, ps, ...), git (log/show/diff/blame/checkout/revert/commit/... "
-        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only, `python checkout-service/scripts/<name>.py ...` "
+        "no reset/clean/push), sqlite3 (read-only), curl to 127.0.0.1 only, `python {service}/scripts/<name>.py ...` "
         "for the ops scripts that ship with the repo, and rm only for files you created yourself. Pipes and "
 "joining commands with ';', '&&', '||' is fine; no redirection or command substitution (curl -o /dev/null is allowed). "
         "Use edit_file to change files and restart_service to restart."
     )
     input_schema = {
         "type": "object",
-        "properties": {"command": {"type": "string", "description": "The command line to run, e.g. `git -C checkout-service log --oneline -5` or `cd`-free paths relative to the host root."}},
+        "properties": {"command": {"type": "string", "description": "The command line to run, e.g. `git -C {service} log --oneline -5` or `cd`-free paths relative to the host root."}},
         "required": ["command"],
     }
 

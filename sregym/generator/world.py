@@ -37,12 +37,11 @@ from typing import Any
 from sregym import util
 from sregym.generator import app_source
 from sregym.generator.data import BusinessData, create_databases, db_table_snapshot, generate_business_data
+from sregym.generator.naming import CLASSIC, StackNaming
+from sregym.generator.naming import pick as pick_naming
 
-SERVICE_NAME = "checkout-service"
 CONTROL_DIR = ".sregym"  # lives in <base>/, next to (not inside) the agent-visible host root
 HOST_DIR = "host"
-CORE_DB = "data/checkout.db"
-LEDGER_DB = "data/ledger.db"
 
 # directories never hashed into the file manifest / state hash
 MANIFEST_EXCLUDE_DIRS = {".git", "__pycache__", "logs", "var", "metrics", "run", "data"}
@@ -73,6 +72,7 @@ class World:
     max_order_id: int = 0
     fault: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)  # free-form, e.g. incident summary for display
+    naming: StackNaming = CLASSIC  # per-seed stack identity (service/package/db/route names)
     data: BusinessData | None = None  # only populated at build time (not persisted)
 
     # ------------------------------------------------------------------ paths
@@ -83,7 +83,7 @@ class World:
 
     @property
     def repo(self) -> Path:
-        return self.root / SERVICE_NAME
+        return self.root / self.naming.service
 
     @property
     def control_dir(self) -> Path:
@@ -95,11 +95,11 @@ class World:
 
     @property
     def core_db(self) -> Path:
-        return self.repo / CORE_DB
+        return self.repo / self.naming.core_db_rel
 
     @property
     def ledger_db(self) -> Path:
-        return self.repo / LEDGER_DB
+        return self.repo / self.naming.ledger_db_rel
 
     @property
     def log_dir(self) -> Path:
@@ -119,7 +119,7 @@ class World:
 
     @property
     def pid_file(self) -> Path:
-        return self.repo / "run" / f"{SERVICE_NAME}.pid"
+        return self.repo / "run" / f"{self.naming.service}.pid"
 
     def db_paths(self) -> dict[str, Path]:
         paths = {"core": self.core_db, "ledger": self.ledger_db}
@@ -130,7 +130,7 @@ class World:
     # ------------------------------------------------------------------ build
     @classmethod
     def build(cls, seed: int, root: Path | None = None, now: datetime | None = None,
-              history_minutes: int = 180) -> "World":
+              history_minutes: int = 180, naming: StackNaming | None = None) -> "World":
         """Create the healthy stack (no fault, no historical logs yet).
 
         ``root`` is the world's *base* directory (default: a fresh temp dir); the agent-visible
@@ -144,18 +144,19 @@ class World:
             raise FileExistsError(f"world directory {base} is not empty; pick a fresh directory")
         base.mkdir(parents=True, exist_ok=True)
         (base / HOST_DIR).mkdir()
+        naming = naming or pick_naming(seed)
         rng = random.Random(seed ^ 0xA5A5)
         history_start = now - timedelta(minutes=history_minutes)
         data = generate_business_data(seed, now=now, history_end=history_start)
         port = util.free_port()
 
         base_env = {
-            "APP_NAME": SERVICE_NAME,
+            "APP_NAME": naming.service,
             "APP_ENV": "production",
             "APP_HOST": "127.0.0.1",
             "APP_PORT": str(port),
-            "DATABASE_URL": f"sqlite:///{CORE_DB}",
-            "LEDGER_DATABASE_URL": f"sqlite:///{LEDGER_DB}",
+            "DATABASE_URL": f"sqlite:///{naming.core_db_rel}",
+            "LEDGER_DATABASE_URL": f"sqlite:///{naming.ledger_db_rel}",
             "DATABASE_TIMEOUT_SECONDS": "5",
             "PAYMENT_GATEWAY_URL": f"https://payments-gw.internal.{data.domain}/v2",
             "PAYMENT_GATEWAY_TIMEOUT_MS": "1500",
@@ -169,7 +170,7 @@ class World:
         world = cls(
             seed=seed, base=base, now=now, history_start=history_start, port=port,
             company=data.company, domain=data.domain, team=data.team, base_env=base_env,
-            python=sys.executable, data=data,
+            python=sys.executable, naming=naming, data=data,
             sample_user_ids=sorted(rng.sample(data.user_ids, k=min(60, len(data.user_ids)))),
             skus=data.active_skus, max_order_id=len(data.orders),
         )
@@ -185,9 +186,13 @@ class World:
         return world
 
     def template_values(self) -> dict[str, str]:
+        n = self.naming
         return {
             "COMPANY": self.company, "DOMAIN": self.domain, "PORT": str(self.port),
             "REPO": str(self.repo), "PYTHON": self.python,
+            "SERVICE": n.service, "UPSTREAM": n.upstream, "PKG": n.package,
+            "CORE_DB": n.core_db_rel, "LEDGER_DB": n.ledger_db_rel,
+            "CHECKOUT_ROUTE": n.checkout_route, "ROUTE_PREFIX": n.route_prefix,
         }
 
     def _build_repo(self, rng: random.Random, old_secret: str) -> None:
@@ -198,11 +203,12 @@ class World:
         for rev in revisions:
             values = dict(self.template_values(), VERSION=rev.version)
             files = app_source.render_app_files(rev.sections, values)
-            files[".env"] = app_source.render_env(rev.env)
+            files[".env"] = app_source.substitute(app_source.render_env(rev.env), values)
             files.update(rev.extra_files)
             author = self.team[rev.author_index % len(self.team)]
-            sha = self.commit_files(files, rev.message, author, rev.when)
-            self.commits.append({"sha": sha, "message": rev.message.splitlines()[0], "when": util.fmt_iso(rev.when),
+            message = app_source.substitute(rev.message, values)
+            sha = self.commit_files(files, message, author, rev.when)
+            self.commits.append({"sha": sha, "message": message.splitlines()[0], "when": util.fmt_iso(rev.when),
                                  "author": author["name"]})
 
     def commit_files(self, files: dict[str, str], message: str, author: dict[str, str], when: datetime) -> str:
@@ -230,10 +236,11 @@ class World:
 
     def _write_system_files(self) -> None:
         values = self.template_values()
+        svc = self.naming.service
         targets = {
-            "nginx.conf": self.root / "etc" / "nginx" / "sites-enabled" / f"{SERVICE_NAME}.conf",
-            "checkout-service.service": self.root / "etc" / "systemd" / "system" / f"{SERVICE_NAME}.service",
-            "cron.d": self.root / "etc" / "cron.d" / SERVICE_NAME,
+            "nginx.conf": self.root / "etc" / "nginx" / "sites-enabled" / f"{svc}.conf",
+            "app.service": self.root / "etc" / "systemd" / "system" / f"{svc}.service",
+            "cron.d": self.root / "etc" / "cron.d" / svc,
         }
         for name, dest in targets.items():
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +254,7 @@ class World:
             "company": self.company, "domain": self.domain, "team": self.team, "base_env": self.base_env,
             "python": self.python, "commits": self.commits, "sample_user_ids": self.sample_user_ids,
             "skus": self.skus, "max_order_id": self.max_order_id, "fault": self.fault, "extra": self.extra,
+            "naming": self.naming.to_dict(),
         }
 
     def save(self) -> None:
@@ -265,6 +273,7 @@ class World:
             port=d["port"], company=d["company"], domain=d["domain"], team=d["team"], base_env=d["base_env"],
             python=d["python"], commits=d["commits"], sample_user_ids=d["sample_user_ids"], skus=d["skus"],
             max_order_id=d["max_order_id"], fault=d.get("fault"), extra=d.get("extra", {}),
+            naming=StackNaming.from_dict(d["naming"]) if "naming" in d else CLASSIC,
         )
 
     def destroy(self) -> None:

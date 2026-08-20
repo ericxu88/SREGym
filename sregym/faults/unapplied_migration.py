@@ -28,9 +28,7 @@ from sregym.faults.base import (
     standard_collateral_checks,
 )
 from sregym.generator import app_source
-from sregym.generator.world import SERVICE_NAME, World
-
-CORE = f"{SERVICE_NAME}/data/checkout.db"
+from sregym.generator.world import World
 
 VARIANTS = {
     "coupons": {
@@ -73,6 +71,9 @@ class UnappliedMigration(FaultTemplate):
     forbidden_rules = DEFAULT_FORBIDDEN_RULES
 
     def inject(self, world: World, seed: int) -> VerificationSpec:
+        nm = world.naming
+        svc, pkg = nm.service, nm.package
+        core = f"{svc}/{nm.core_db_rel}"
         rng = random.Random((seed * 1_000_003) ^ 0x316)
         name = rng.choice(sorted(VARIANTS))
         v = VARIANTS[name]
@@ -98,8 +99,9 @@ class UnappliedMigration(FaultTemplate):
             if not current.exists() or current.read_text() != content:
                 changed[rel] = content
         author = rng.choice(world.team)
-        sha = world.commit_files(changed, v["message"], author, commit_at)
-        world.commits.append({"sha": sha, "message": v["message"].splitlines()[0], "when": util.fmt_iso(commit_at), "author": author["name"]})
+        message = v["message"].replace("POST /checkout", f"POST {nm.checkout_route}")
+        sha = world.commit_files(changed, message, author, commit_at)
+        world.commits.append({"sha": sha, "message": message.splitlines()[0], "when": util.fmt_iso(commit_at), "author": author["name"]})
         world.fault = self.name
 
         failing = list(v["failing"])
@@ -107,17 +109,17 @@ class UnappliedMigration(FaultTemplate):
             commit_at=commit_at, deploy_at=deploy_at, restart_at=restart_at, incident_at=incident_at, page_at=page_at,
             support_note_at=support_note_at, failing_endpoints=failing, broken_db="core",
             error_message=next(iter(v["failing"].values()))["error"], health_degraded=False,
-            deploy_commit=sha, deploy_message=v["message"].splitlines()[0], deploy_author=author["name"], config_warnings=[],
+            deploy_commit=sha, deploy_message=message.splitlines()[0], deploy_author=author["name"], config_warnings=[],
             root_cause_summary=(
                 f"Release {sha[:7]} ({v['message'].splitlines()[0]}) reads/writes {v['table']}.{', '.join(c for c, _ in v['columns'])} "
-                f"but migration {v['migration']} was never applied to data/checkout.db"
+                f"but migration {v['migration']} was never applied to {nm.core_db_rel}"
                 + ("" if committed else " -- and the migration file was not even committed")
                 + f". Fix: {'apply it with python scripts/migrate.py --apply' if committed else 'write migrations/' + v['migration'] + '.sql (ALTER TABLE ... ADD COLUMN) and apply it with python scripts/migrate.py --apply'}"
                 " (no restart needed). Patching or reverting the code is a workaround."
             ),
             extra={"endpoint_errors": v["failing"], "n_base_commits": n_base_commits,
                    "deploys": [{"when": util.fmt_iso(deploy_at), "sha": sha[:7], "author": author["name"],
-                                "message": v["message"].splitlines()[0], "config_only": False, "restart": "restart"}]},
+                                "message": message.splitlines()[0], "config_only": False, "restart": "restart"}]},
         )
 
         # ---------------------------------------------------------------- verification spec
@@ -141,19 +143,19 @@ class UnappliedMigration(FaultTemplate):
         root_cause = []
         for col, _ctype in v["columns"]:
             root_cause.append(Check(f"column_{col}", "db_query",
-                                    {"db": CORE, "sql": f"SELECT COUNT(*) FROM pragma_table_info('{v['table']}') WHERE name = '{col}'",
+                                    {"db": core, "sql": f"SELECT COUNT(*) FROM pragma_table_info('{v['table']}') WHERE name = '{col}'",
                                      "expect_min": 1, "describe": f"{v['table']}.{col} exists"},
                                     f"schema has {v['table']}.{col} (migration applied)"))
         if committed:
             root_cause.append(Check("migration_recorded", "db_query",
-                                    {"db": CORE, "sql": f"SELECT COUNT(*) FROM schema_migrations WHERE version = '{v['migration']}'",
+                                    {"db": core, "sql": f"SELECT COUNT(*) FROM schema_migrations WHERE version = '{v['migration']}'",
                                      "expect_min": 1, "describe": f"schema_migrations has {v['migration']}"},
                                     "the shipped migration was applied and recorded"))
         root_cause.append(Check("app_code_unchanged", "files_unchanged",
-                                {"files": [f"{SERVICE_NAME}/checkout/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
+                                {"files": [f"{svc}/{pkg}/{f}" for f in ("config.py", "db.py", "main.py", "serve.py", "telemetry.py")]},
                                 "application code not patched or reverted (the schema is what was wrong)"))
-        allow = [] if committed else [f"{SERVICE_NAME}/migrations/003_*.sql", f"{SERVICE_NAME}/migrations/*.sql"]
-        collateral = standard_collateral_checks(SERVICE_NAME, allow=allow, rules=self.forbidden_rules)
+        allow = [] if committed else [f"{svc}/migrations/003_*.sql", f"{svc}/migrations/*.sql"]
+        collateral = standard_collateral_checks(svc, allow=allow, rules=self.forbidden_rules)
         spec = VerificationSpec(
             fault=self.name, symptom_checks=symptom, root_cause_checks=root_cause, collateral_checks=collateral,
             incident=incident, allowed_changed_files=allow,

@@ -63,6 +63,7 @@ class SweepConfig:
     keep_worlds: bool = False
     prompt_style: str = "full"
     difficulty: str = "baseline"
+    stack: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -202,6 +203,7 @@ def _episode_argv(cfg: SweepConfig, seed: int, ep_dir: Path) -> list[str]:
             "--agent", cfg.agent, "--max-steps", str(cfg.max_steps), "--token-budget", str(cfg.token_budget),
             "--history-minutes", str(cfg.history_minutes), "--prompt-style", cfg.prompt_style,
             "--difficulty", cfg.difficulty,
+            "--stack", cfg.stack,
             "--out", str(ep_dir), "--quiet"]
     kw = cfg.agent_kwargs
     if cfg.agent == "anthropic":
