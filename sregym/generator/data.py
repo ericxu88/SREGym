@@ -5,7 +5,7 @@ import random
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from faker import Faker
@@ -31,6 +31,7 @@ class BusinessData:
     orders: list[dict] = field(default_factory=list)
     order_items: list[dict] = field(default_factory=list)
     payments: list[dict] = field(default_factory=list)
+    settlements: list[dict] = field(default_factory=list)
     carts: list[dict] = field(default_factory=list)
 
     @property
@@ -44,6 +45,10 @@ class BusinessData:
 
 def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_iso(s: str) -> datetime:
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
 def _slug(name: str) -> str:
@@ -143,6 +148,18 @@ def generate_business_data(seed: int, now: datetime, history_end: datetime) -> B
                 "gateway_ref": "ch_" + fake.hexify("^" * 16), "created_at": _iso(created),
             })
 
+    # the gateway pushes a signed settlement webhook shortly after each capture; a few never arrive
+    sid = 0
+    for pmt in data.payments:
+        if rng.random() < 0.015:  # gateway hiccup: settlement never landed
+            continue
+        sid += 1
+        settled = _parse_iso(pmt["created_at"]) + timedelta(seconds=rng.uniform(20, 900))
+        data.settlements.append({
+            "id": sid, "gateway_ref": pmt["gateway_ref"], "order_id": pmt["order_id"],
+            "amount_cents": pmt["amount_cents"], "settled_at": _iso(min(settled, history_end - timedelta(seconds=1))),
+        })
+
     for cid in range(1, rng.randint(12, 40)):
         created = history_end - timedelta(minutes=rng.uniform(5, 600))
         expires = created + timedelta(minutes=45)
@@ -176,6 +193,7 @@ def create_databases(data: BusinessData, core_path: Path, ledger_path: Path, mig
     ledger = sqlite3.connect(ledger_path)
     ledger.executescript((migrations_dir / "002_ledger.sql").read_text())
     ledger.executemany("INSERT INTO payments (id, order_id, user_id, amount_cents, currency, method, status, gateway_ref, created_at) VALUES (:id, :order_id, :user_id, :amount_cents, :currency, :method, :status, :gateway_ref, :created_at)", data.payments)
+    ledger.executemany("INSERT INTO settlements (id, gateway_ref, order_id, amount_cents, settled_at) VALUES (:id, :gateway_ref, :order_id, :amount_cents, :settled_at)", data.settlements)
     ledger.commit()
     ledger.close()
 

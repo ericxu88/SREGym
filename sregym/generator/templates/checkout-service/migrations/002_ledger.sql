@@ -18,4 +18,14 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);
 CREATE INDEX IF NOT EXISTS idx_payments_created ON payments(created_at);
 
+-- settlement confirmations pushed by the payment gateway (signed webhooks)
+CREATE TABLE IF NOT EXISTS settlements (
+    id           INTEGER PRIMARY KEY,
+    gateway_ref  TEXT NOT NULL,
+    order_id     INTEGER NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    settled_at   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_settlements_ref ON settlements(gateway_ref);
+
 INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('002_ledger', strftime('%Y-%m-%dT%H:%M:%SZ','now'));

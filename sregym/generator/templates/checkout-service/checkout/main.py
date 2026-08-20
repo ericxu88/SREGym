@@ -13,6 +13,9 @@ Endpoints:
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import os
 import sqlite3
@@ -37,6 +40,7 @@ from .db import ledger_db
 
 log = logging.getLogger("__SREGYM_PKG__.app")
 access_log = logging.getLogger("__SREGYM_PKG__.access")
+webhook_log = logging.getLogger("__SREGYM_PKG__.webhooks")
 ratelimit_log = logging.getLogger("__SREGYM_PKG__.ratelimit")
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -381,6 +385,35 @@ def checkout(payload: CheckoutRequest, request: Request) -> dict[str, Any]:
 #]] checkout
 #[[ metrics
 # --------------------------------------------------------------------------- metrics
+#[[ ledger
+# --------------------------------------------------------------------------- gateway webhooks
+@app.post("__SREGYM_ROUTE_PREFIX__/webhooks/payments")
+async def payment_webhook(request: Request) -> dict[str, str]:
+    """Settlement confirmations pushed by the payment gateway. The body is authenticated with
+    an HMAC-SHA256 signature over the raw bytes (X-Signature: sha256=<hex>), keyed with
+    WEBHOOK_SIGNING_SECRET -- the secret is shared with the gateway."""
+    raw = await request.body()
+    provided = request.headers.get("x-signature", "")
+    expected = "sha256=" + hmac.new(settings.webhook_signing_secret.encode(), raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(provided, expected):
+        telemetry.webhook_rejected()
+        webhook_log.warning("webhook signature mismatch (%d bytes dropped)", len(raw))
+        raise HTTPException(status_code=401, detail="signature invalid")
+    try:
+        event = json.loads(raw)
+        ref, order_id, amount = event["gateway_ref"], int(event["order_id"]), int(event["amount_cents"])
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=422, detail="malformed settlement event") from None
+    with ledger_db() as ledger:
+        ledger.execute(
+            "INSERT OR IGNORE INTO settlements (gateway_ref, order_id, amount_cents, settled_at) VALUES (?, ?, ?, ?)",
+            (ref, order_id, amount, _now_iso()),
+        )
+    request.state.log_extra["ref"] = ref
+    return {"status": "recorded"}
+
+
+#]] ledger
 @app.get("/metrics")
 def metrics() -> PlainTextResponse:
     return PlainTextResponse(telemetry.render(__version__, COMMIT), media_type="text/plain; version=0.0.4")

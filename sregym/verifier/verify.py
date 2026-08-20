@@ -104,12 +104,14 @@ class Verifier:
 
     # ------------------------------------------------------------------ symptom checks
     def check_http(self, method: str, path: str, expect_status: list[int], body: Any = None,
-                   response_contains: str | None = None, then_sql: dict[str, Any] | None = None) -> tuple[bool, str]:
+                   response_contains: str | None = None, then_sql: dict[str, Any] | None = None,
+                   headers: dict[str, str] | None = None) -> tuple[bool, str]:
         """HTTP probe; optionally follow up with a SQL assertion that uses a key from the JSON response
         (``then_sql = {db, sql, response_key, expect_min}``), e.g. "the payment for this order is in the ledger"."""
         status, text = 0, ""
         for attempt in range(3):
-            status, text = util.http_request(method, self.base_url + self.world.naming.route(path), body=body, timeout=5)
+            status, text = util.http_request(method, self.base_url + self.world.naming.route(path), body=body, timeout=5,
+                                             headers=headers)
             if status != 0:
                 break
             time.sleep(0.4)

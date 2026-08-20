@@ -192,4 +192,4 @@ def list_faults() -> dict[str, str]:
 
 def _ensure_loaded() -> None:
     # import built-in templates so they register themselves
-    from sregym.faults import bad_dependency_pin, cron_write_lock, db_file_permissions, disk_full, env_var_typo, ledger_divergence, rate_limit_misconfig, unapplied_migration  # noqa: F401
+    from sregym.faults import bad_dependency_pin, cron_write_lock, db_file_permissions, disk_full, env_var_typo, ledger_divergence, rate_limit_misconfig, stale_secret, unapplied_migration  # noqa: F401

@@ -53,10 +53,10 @@ class TrafficGenerator(threading.Thread):
                     "items": [{"sku": s, "quantity": rng.choice([1, 1, 2])} for s in rng.sample(w.skus, k=min(len(w.skus), rng.choice([1, 1, 2])))],
                     "payment_method": rng.choice(["card"] * 7 + ["paypal"] * 2 + ["apple_pay"])}
             if rng.random() < tp.BURST_PROB:  # double-click / client retry: same user, right away
-                self._request(method, path, body, rng.choice(tp.USER_AGENTS))
+                self._webhook_after(self._request(method, path, body, rng.choice(tp.USER_AGENTS)))
                 for _ in range(rng.randint(*tp.BURST_EXTRA)):
                     time.sleep(rng.uniform(0.3, 1.2))
-                    self._request(method, path, body, rng.choice(tp.USER_AGENTS))
+                    self._webhook_after(self._request(method, path, body, rng.choice(tp.USER_AGENTS)))
                 return
         elif template == "/orders/{order_id}":
             path = f"/orders/{rng.randint(max(1, w.max_order_id - 3000), w.max_order_id + 20)}"
@@ -66,11 +66,43 @@ class TrafficGenerator(threading.Thread):
             path = f"/users/{rng.choice(w.sample_user_ids)}"
         else:
             path = "/users?limit=20"
-        self._request(method, path, body, rng.choice(tp.USER_AGENTS))
+        result = self._request(method, path, body, rng.choice(tp.USER_AGENTS))
+        if template == "/checkout":
+            self._webhook_after(result)
 
-    def _request(self, method: str, path: str, body, ua: str, log_nginx: bool = True, ip: str | None = None) -> None:
+    def _webhook_after(self, result: tuple[int, str]) -> None:
+        """After a successful capture the gateway pushes a signed settlement confirmation.
+        It signs with ITS copy of the shared secret (the world's canonical config), whatever
+        the service's .env currently says."""
+        import hashlib
+        import hmac
+        import json as _json
+
+        status, text = result
+        if status != 201:
+            return
+        try:
+            resp = _json.loads(text)
+            event = {"event": "capture.settled", "gateway_ref": resp["gateway_ref"],
+                     "order_id": resp["order_id"], "amount_cents": resp["total_cents"]}
+        except (ValueError, KeyError):
+            return
+        secret = self.world.base_env.get("WEBHOOK_SIGNING_SECRET", "")
+        if not secret:
+            return
+        raw = _json.dumps(event).encode()
+        sig = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        time.sleep(self.rng.uniform(0.2, 1.0))
+        self._request("POST", "/webhooks/payments", event, "PaymentsGateway-Webhooks/2.4",
+                      headers={"X-Signature": sig})
+
+    def _request(self, method: str, path: str, body, ua: str, log_nginx: bool = True, ip: str | None = None,
+                 headers: dict[str, str] | None = None) -> tuple[int, str]:
         path = self.world.naming.route(path)  # canonical -> this stack's concrete route
-        status, text = util.http_request(method, self.world.base_url + path, body=body, timeout=8, headers={"User-Agent": ua})
+        hdrs = {"User-Agent": ua}
+        if headers:
+            hdrs.update(headers)
+        status, text = util.http_request(method, self.world.base_url + path, body=body, timeout=8, headers=hdrs)
         self.sent += 1
         if status == 0:
             self.failed += 1
@@ -84,3 +116,4 @@ class TrafficGenerator(threading.Thread):
                     f.write(line)
             except OSError:
                 pass
+        return status, text

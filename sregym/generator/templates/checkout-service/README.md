@@ -15,6 +15,9 @@ backed by SQLite; fronted by nginx in production.
 #[[ checkout
 | POST   | `__SREGYM_CHECKOUT_ROUTE__`     | create order, capture payment, returns 201         |
 #]] checkout
+#[[ ledger
+| POST   | `__SREGYM_ROUTE_PREFIX__/webhooks/payments` | gateway settlement webhook (HMAC-signed, see below) |
+#]] ledger
 #[[ metrics
 | GET    | `/metrics`      | Prometheus text format (scraped every 15s)         |
 #]] metrics
@@ -37,6 +40,11 @@ Key settings:
 #]] ledger
 - `LOG_PATH` / `LOG_LEVEL` – application log destination
 - `RATE_LIMIT_PER_MINUTE` – per-user checkout rate limit
+#[[ ledger
+- `WEBHOOK_SIGNING_SECRET` – authenticates gateway settlement webhooks (HMAC-SHA256 over
+  the raw body, `X-Signature: sha256=<hex>`). **Shared with the payment gateway** – rotating
+  it requires a coordinated change on the gateway side, never rotate it unilaterally.
+#]] ledger
 - `DATABASE_MAX_PAGES` – optional size cap for the core database, in SQLite pages
   (unset or `0` = unlimited); writes beyond the cap fail with *database or disk is full*
 #[[ checkout

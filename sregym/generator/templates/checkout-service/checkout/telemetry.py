@@ -13,6 +13,7 @@ _duration_sum: dict[str, float] = defaultdict(float)  # path -> ms
 _duration_count: dict[str, int] = defaultdict(int)
 _db_errors: dict[str, int] = defaultdict(int)  # db -> count
 _ratelimited: int = 0
+_webhook_rejects: int = 0
 
 
 def observe_request(method: str, path: str, status: int, duration_ms: float) -> None:
@@ -31,6 +32,12 @@ def rate_limited() -> None:
     global _ratelimited
     with _lock:
         _ratelimited += 1
+
+
+def webhook_rejected() -> None:
+    global _webhook_rejects
+    with _lock:
+        _webhook_rejects += 1
 
 
 def _labels(**kw: str) -> str:
@@ -59,6 +66,9 @@ def render(version: str, commit: str) -> str:
         lines.append("# HELP rate_limited_requests_total Requests rejected by the per-user rate limiter.")
         lines.append("# TYPE rate_limited_requests_total counter")
         lines.append(f"rate_limited_requests_total {_ratelimited}")
+        lines.append("# HELP webhook_signature_failures_total Gateway webhooks rejected for a bad signature.")
+        lines.append("# TYPE webhook_signature_failures_total counter")
+        lines.append(f"webhook_signature_failures_total {_webhook_rejects}")
         lines.append("# HELP process_start_time_seconds Unix time the process started.")
         lines.append("# TYPE process_start_time_seconds gauge")
         lines.append(f"process_start_time_seconds {_started:.0f}")

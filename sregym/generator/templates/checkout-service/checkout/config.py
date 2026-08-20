@@ -22,6 +22,7 @@ DEFAULTS: dict[str, str] = {
     "DATABASE_URL": "sqlite:///data/__SREGYM_PKG__-dev.db",
     #[[ ledger
     "LEDGER_DATABASE_URL": "sqlite:///data/ledger-dev.db",
+    "WEBHOOK_SIGNING_SECRET": "whsec-dev-not-for-production",
     #]] ledger
     "DATABASE_TIMEOUT_SECONDS": "5",
     "DATABASE_MAX_PAGES": "0",
@@ -69,6 +70,7 @@ class Settings:
     database_url: str
     #[[ ledger
     ledger_database_url: str
+    webhook_signing_secret: str
     #]] ledger
     db_timeout_seconds: float
     database_max_pages: int
@@ -108,6 +110,7 @@ def _load() -> tuple[Settings, dict[str, str], list[str]]:
         database_url=values["DATABASE_URL"],
         #[[ ledger
         ledger_database_url=values["LEDGER_DATABASE_URL"],
+        webhook_signing_secret=values["WEBHOOK_SIGNING_SECRET"],
         #]] ledger
         db_timeout_seconds=float(values["DATABASE_TIMEOUT_SECONDS"]),
         database_max_pages=int(values["DATABASE_MAX_PAGES"] or 0),

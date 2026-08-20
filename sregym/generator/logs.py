@@ -49,6 +49,10 @@ class _Sim:
     new_orders: list[tuple] = field(default_factory=list)
     new_items: list[tuple] = field(default_factory=list)
     new_payments: list[tuple] = field(default_factory=list)  # -> the real ledger
+    new_settlements: list[tuple] = field(default_factory=list)  # gateway settlement webhooks that were accepted
+    settlement_times: list[datetime] = field(default_factory=list)
+    settlement_base_count: int = 0
+    settlement_base_last: datetime | None = None
     diverted_payments: list[tuple] = field(default_factory=list)  # -> incident.extra["payments_db"] (e.g. a stale snapshot)
     ledger_payment_times: list[datetime] = field(default_factory=list)  # payments that reached the real ledger
     ledger_base_count: int = 0
@@ -151,9 +155,11 @@ def _load_refs(world: World) -> tuple[list[int], list[dict], int, int, datetime 
     ledger = sqlite3.connect(f"file:{world.ledger_db}?mode=ro", uri=True)
     try:
         count, last = ledger.execute("SELECT COUNT(*), MAX(created_at) FROM payments").fetchone()
+        s_count, s_last = ledger.execute("SELECT COUNT(*), MAX(settled_at) FROM settlements").fetchone()
     finally:
         ledger.close()
-    return user_ids, products, max_order, int(count), (util.parse_iso(last) if last else None)
+    return (user_ids, products, max_order, int(count), (util.parse_iso(last) if last else None),
+            int(s_count), (util.parse_iso(s_last) if s_last else None))
 
 
 def _bump_metric(sim: _Sim, ts: datetime, name: str, labels: dict[str, str], value: float) -> None:
@@ -194,7 +200,7 @@ def _record_request(sim: _Sim, ts: datetime, method: str, template: str, path: s
     # nginx access log (health probes are access_log off in the nginx config)
     if template != "/health":
         ua = ua or rng.choice(tp.USER_AGENTS)
-        size = {200: rng.randint(180, 620), 201: rng.randint(150, 220), 400: rng.randint(40, 90), 404: 27,
+        size = {200: rng.randint(180, 620), 201: rng.randint(150, 220), 400: rng.randint(40, 90), 401: 39, 404: 27,
                 422: rng.randint(90, 160), 429: 32, 500: 98, 503: rng.randint(150, 220)}.get(status, 100)
         ip = ip or ("10.0.4.12" if template == "/metrics" else tp.fake_client_ip(rng))
         sim.nginx_access.append((ts, f'{ip} - - [{ts.strftime("%d/%b/%Y:%H:%M:%S +0000")}] "{method} {path} HTTP/1.1" {status} {size} "-" "{ua}"'))
@@ -263,8 +269,35 @@ def _checkout_attempt(sim: _Sim, ts: datetime, user_id: int, failing: bool, core
         else:
             sim.new_payments.append(payment)
             sim.ledger_payment_times.append(ts)
+        _gateway_webhook(sim, ts, order_id, total, payment[6], diverted)
     warn_lines = [f"slow database transaction ({latency:.0f}ms) db=core"] if slow else None
     _record_request(sim, ts, "POST", "/checkout", "/checkout", status, latency, extra, error, tb_key, warn_lines)
+
+
+def _gateway_webhook(sim: _Sim, ts: datetime, order_id: int, amount: int, ref: str, diverted: bool) -> None:
+    """The gateway pushes a signed settlement confirmation shortly after each capture."""
+    rng = sim.rng
+    at = ts + timedelta(seconds=rng.uniform(2, 20))
+    if at >= sim.world.now:
+        return  # would land after "now"
+    inc = sim.incident
+    key = "POST /webhooks/payments"
+    rejected = bool(inc) and key in inc.failing_endpoints and at >= inc.incident_at
+    latency = tp.latency_ms(rng, "/webhooks/payments")
+    if rejected:
+        sim.events.append(_Event(at, [_fmt(at, "WARNING", f"{sim.pkg}.webhooks",
+                                          f"webhook signature mismatch ({rng.randint(148, 196)} bytes dropped)")],
+                                 sim.next_seq()))
+        _bump_metric(sim, at, "webhook_signature_failures_total", {}, 1)
+        _record_request(sim, at, "POST", "/webhooks/payments", "/webhooks/payments", 401, latency, {}, None, None,
+                        ua="PaymentsGateway-Webhooks/2.4")
+        return
+    settled = util.fmt_iso(at)
+    sim.new_settlements.append((ref, order_id, amount, settled))
+    if not diverted:
+        sim.settlement_times.append(at)
+    _record_request(sim, at, "POST", "/webhooks/payments", "/webhooks/payments", 200, latency, {"ref": ref}, None, None,
+                    ua="PaymentsGateway-Webhooks/2.4")
 
 
 def _endpoint_state(sim: _Sim, ts: datetime, key: str) -> tuple[bool, dict | None]:
@@ -407,10 +440,11 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     """Write all historical artifacts for the world; returns summary stats (also stored in world.extra)."""
     seed = world.seed if seed is None else seed
     rng = random.Random((seed * 7919) ^ 0x106)
-    user_ids, products, max_order, ledger_count, ledger_last = _load_refs(world)
+    user_ids, products, max_order, ledger_count, ledger_last, s_count, s_last = _load_refs(world)
     sim = _Sim(rng=rng, world=world, incident=incident, user_ids=user_ids, products=products,
                max_order_id=max_order, tb=_traceback_templates(world.repo, world.naming.package),
-               ledger_base_count=ledger_count, ledger_base_last=ledger_last)
+               ledger_base_count=ledger_count, ledger_base_last=ledger_last,
+               settlement_base_count=s_count, settlement_base_last=s_last)
     start, end = world.history_start, world.now
     version = re.search(r'__version__ = "([^"]+)"', (world.repo / world.naming.package / "__init__.py").read_text()).group(1)
     n_keys = len(util.parse_env_file(world.env_file.read_text()))
@@ -493,6 +527,7 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
     import bisect
 
     ledger_times = sorted(sim.ledger_payment_times)
+    settle_times = sorted(sim.settlement_times)
     minute = start.replace(second=0, microsecond=0)
     while minute < end:
         minute_end = minute + timedelta(minutes=1)
@@ -508,6 +543,11 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
         last = ledger_times[n - 1] if n else sim.ledger_base_last
         _bump_metric(sim, minute, "ledger_payments_total", {}, sim.ledger_base_count + n)
         _bump_metric(sim, minute, "ledger_last_payment_age_seconds", {}, round((minute_end - last).total_seconds(), 1) if last else 0.0)
+        ns = bisect.bisect_left(settle_times, minute_end)
+        s_last_at = settle_times[ns - 1] if ns else sim.settlement_base_last
+        _bump_metric(sim, minute, "ledger_settlements_total", {}, sim.settlement_base_count + ns)
+        _bump_metric(sim, minute, "ledger_last_settlement_age_seconds",
+                     {}, round((minute_end - s_last_at).total_seconds(), 1) if s_last_at else 0.0)
         minute += timedelta(minutes=1)
 
     # ------------------------------------------------------------------ write artifacts
@@ -675,10 +715,22 @@ def _insert_orders(world: World, sim: _Sim) -> None:
     core.close()
     ledger = sqlite3.connect(world.ledger_db)
     ledger.executemany("INSERT INTO payments (order_id, user_id, amount_cents, currency, method, status, gateway_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", sim.new_payments)
+    accepted_refs = {p[6] for p in sim.new_payments}
+    try:
+        ledger.executemany("INSERT OR IGNORE INTO settlements (gateway_ref, order_id, amount_cents, settled_at) VALUES (?, ?, ?, ?)",
+                           [row for row in sim.new_settlements if row[0] in accepted_refs])
+    except sqlite3.OperationalError:
+        pass  # ledger predates the settlements table
     ledger.commit()
     ledger.close()
     if sim.diverted_payments and sim.incident and sim.incident.extra.get("payments_db"):
+        diverted_refs = {p[6] for p in sim.diverted_payments}
         other = sqlite3.connect(world.repo / sim.incident.extra["payments_db"])
         other.executemany("INSERT INTO payments (order_id, user_id, amount_cents, currency, method, status, gateway_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", sim.diverted_payments)
+        try:
+            other.executemany("INSERT OR IGNORE INTO settlements (gateway_ref, order_id, amount_cents, settled_at) VALUES (?, ?, ?, ?)",
+                              [row for row in sim.new_settlements if row[0] in diverted_refs])
+        except sqlite3.OperationalError:
+            pass  # snapshot predates the settlements table
         other.commit()
         other.close()

@@ -101,14 +101,24 @@ def ledger_exporter_rows(world: World, ts: str) -> list[dict]:
         conn = sqlite3.connect(f"file:{world.ledger_db}?mode=ro", uri=True)
         try:
             count, last = conn.execute("SELECT COUNT(*), MAX(created_at) FROM payments").fetchone()
+            try:
+                s_count, s_last = conn.execute("SELECT COUNT(*), MAX(settled_at) FROM settlements").fetchone()
+            except sqlite3.Error:  # pre-settlements ledger snapshot
+                s_count, s_last = None, None
         finally:
             conn.close()
     except sqlite3.Error:
         return [{"ts": ts, "m": "ledger_exporter_up", "l": {}, "v": 0}]
-    age = 0.0
-    if last:
-        age = max(0.0, (datetime.now(timezone.utc) - util.parse_iso(last)).total_seconds())
-    return [
+    now = datetime.now(timezone.utc)
+    age = max(0.0, (now - util.parse_iso(last)).total_seconds()) if last else 0.0
+    rows = [
         {"ts": ts, "m": "ledger_payments_total", "l": {}, "v": int(count)},
         {"ts": ts, "m": "ledger_last_payment_age_seconds", "l": {}, "v": round(age, 1)},
     ]
+    if s_count is not None:
+        s_age = max(0.0, (now - util.parse_iso(s_last)).total_seconds()) if s_last else 0.0
+        rows += [
+            {"ts": ts, "m": "ledger_settlements_total", "l": {}, "v": int(s_count)},
+            {"ts": ts, "m": "ledger_last_settlement_age_seconds", "l": {}, "v": round(s_age, 1)},
+        ]
+    return rows

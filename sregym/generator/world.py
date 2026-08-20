@@ -166,6 +166,7 @@ class World:
             "LOG_LEVEL": "INFO",
             "RATE_LIMIT_PER_MINUTE": "600",
             "SESSION_SECRET": "%032x" % rng.getrandbits(128),
+            "WEBHOOK_SIGNING_SECRET": "whsec_%028x" % rng.getrandbits(112),
         }
         world = cls(
             seed=seed, base=base, now=now, history_start=history_start, port=port,

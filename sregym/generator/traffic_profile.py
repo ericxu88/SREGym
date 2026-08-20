@@ -37,6 +37,7 @@ LATENCY = {
     "/users": (2.5, 0.5),
     "/health": (1.5, 0.4),
     "/metrics": (0.6, 0.4),
+    "/webhooks/payments": (2.2, 0.4),
 }
 
 

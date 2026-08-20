@@ -119,6 +119,8 @@ ENV_LAYOUT: list[tuple[str, list[str]]] = [
     ("# --- logging", ["LOG_PATH", "LOG_LEVEL"]),
     ("# --- limits", ["RATE_LIMIT_PER_MINUTE"]),
     ("# --- secrets (rotate quarterly)", ["SESSION_SECRET"]),
+    ("# --- payments webhook (secret is SHARED with the gateway -- rotate only in a coordinated change)",
+     ["WEBHOOK_SIGNING_SECRET"]),
 ]
 
 ENV_HEADER = (
@@ -172,6 +174,7 @@ def plan_revisions(*, now: datetime, base_env: dict[str, str], old_secret: str, 
 
     env_v3 = dict(env_v2)
     env_v3["LEDGER_DATABASE_URL"] = base_env["LEDGER_DATABASE_URL"]
+    env_v3["WEBHOOK_SIGNING_SECRET"] = base_env["WEBHOOK_SIGNING_SECRET"]
 
     env_v5 = dict(env_v3)
     env_v5["RATE_LIMIT_PER_MINUTE"] = base_env["RATE_LIMIT_PER_MINUTE"]
@@ -188,7 +191,8 @@ def plan_revisions(*, now: datetime, base_env: dict[str, str], old_secret: str, 
         Revision("feat(payments): record captured payments in a separate ledger database\n\n"
                  "Audit asked for payment records to live in their own file so they can be\n"
                  "snapshotted independently of the core db. Adds LEDGER_DATABASE_URL and\n"
-                 "migrations/002_ledger.sql.", "1.2.0",
+                 "migrations/002_ledger.sql, plus the gateway's signed settlement webhook\n"
+                 "(WEBHOOK_SIGNING_SECRET is shared with the gateway).", "1.2.0",
                  frozenset({"checkout", "ledger"}), env_v3, ago(58 + j(0, 6), j(0, 20)), 0),
         Revision("feat: expose /metrics for prometheus scraping", "1.3.0",
                  frozenset({"checkout", "ledger", "metrics"}), env_v3, ago(44 + j(0, 5), j(0, 20)), 2),
