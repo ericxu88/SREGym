@@ -595,6 +595,23 @@ outages after the SDK's own retries) are retried with backoff and recorded as
 - breakdown by fault variant (env var × typo kind, innocent co-change), steps/tokens/
   duration/cost per episode, and a triage table of failed seeds with the hidden root cause
 
+## Docker
+
+The repo ships a `Dockerfile` that runs the full harness — episodes, sweeps, and the verifiers
+taskset — isolated from the host, as an unprivileged user (CI builds it and runs an episode inside):
+
+```bash
+docker build -t sregym .
+docker run --rm sregym run --seed 42 --agent scripted --quiet                      # offline demo
+docker run --rm -e ANTHROPIC_API_KEY sregym run --seed 7 --agent anthropic --model claude-sonnet-5
+docker run --rm -e ANTHROPIC_API_KEY -v "$PWD/sweeps:/work/sweeps" sregym \
+    sweep --seeds 1-20 --out sweeps/run1 --model claude-sonnet-5
+```
+
+Worlds live in the container's ephemeral filesystem; mount a volume (as in the sweep example) for
+anything you want to keep. This is defense-in-depth on top of the allow-listed tool sandbox, and the
+recommended way to run models you trust less than the sandbox.
+
 ## Verifiers taskset (RL / evals via Prime Intellect's `verifiers`)
 
 `environments/sregym_env` packages SREGym as a native [verifiers](https://github.com/PrimeIntellect-ai/verifiers)

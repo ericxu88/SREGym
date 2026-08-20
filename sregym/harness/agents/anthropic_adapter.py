@@ -28,13 +28,14 @@ class AnthropicAdapter(AgentAdapter):
                  effort: str | None = None, thinking_display: str = "summarized", fallbacks: bool | None = None,
                  max_retries: int = 4, request_timeout: float = 240.0, client: Any = None):
         import anthropic
-        import httpx
 
         self._anthropic = anthropic
         # explicit, bounded timeouts: on flaky networks a dead connection can otherwise hang a read for
         # hours (observed: SSL read blocked ~4h during a sweep). connect fast-fails; the SDK then retries.
+        # The Timeout class must come from the HTTP library the SDK itself uses: anthropic 1.x moved
+        # from httpx to httpx2, and a classic httpx.Timeout breaks its transport at request time.
         self.client = client or anthropic.Anthropic(
-            max_retries=max_retries, timeout=httpx.Timeout(request_timeout, connect=10.0))
+            max_retries=max_retries, timeout=_sdk_timeout(anthropic, request_timeout))
         self.model = model
         self.max_tokens = max_tokens
         self.thinking = thinking  # "adaptive" | "off"
@@ -132,6 +133,15 @@ class AnthropicAdapter(AgentAdapter):
                 self.thinking = "off"
                 return self.client.messages.create(**self._request_kwargs(self.fallbacks))
             raise
+
+
+def _sdk_timeout(anthropic, request_timeout: float):  # noqa: ANN001, ANN202
+    """A read/write-bounded, fast-connect timeout in the SDK's own HTTP library's terms."""
+    base = getattr(anthropic, "_base_client", None)
+    http_mod = getattr(base, "httpx2", None) or getattr(base, "httpx", None)
+    if http_mod is None:  # unknown SDK layout: a plain float is universally accepted
+        return request_timeout
+    return http_mod.Timeout(request_timeout, connect=10.0)
 
 
 def api_credentials_present() -> bool:

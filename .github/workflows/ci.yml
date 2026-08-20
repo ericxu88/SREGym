@@ -38,3 +38,15 @@ jobs:
         run: pytest -q --timeout=300
       - name: Offline demo episode (scripted reference solver)
         run: sregym run --seed 42 --agent scripted --quiet --history-minutes 60 --no-traffic
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t sregym .
+      - name: Offline episode inside the container
+        run: docker run --rm sregym run --seed 42 --agent scripted --quiet --history-minutes 60 --no-traffic
+      - name: Verifiers taskset importable inside the container
+        run: docker run --rm --entrypoint python sregym -c "from verifiers.v1.utils.loaders import taskset_class; print(taskset_class('sregym-env').__name__)"
