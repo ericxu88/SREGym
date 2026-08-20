@@ -646,6 +646,18 @@ eval sregym-env -n 5 -m <model> --no-push \
 (Anthropic's OpenAI-compatible endpoint works directly: `--client.base-url https://api.anthropic.com/v1
 --client.api-key-var ANTHROPIC_API_KEY`.)
 
+**Publishing to the Environments Hub** (maintainer action — needs a Prime Intellect account and an
+explicit visibility choice):
+
+```bash
+uv tool install prime && prime login
+prime env push environments/sregym_env --visibility PRIVATE   # or PUBLIC
+```
+
+The package is push-ready: it installs clean-room (its `sregym` dependency resolves from this GitHub
+repo, `verifiers` from PyPI) and both `SREGymTaskset` and `SREGymHarness` resolve through the
+verifiers loader.
+
 ## CLI
 
 ```
