@@ -162,6 +162,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 def _agent_kwargs(args: argparse.Namespace) -> dict:
     if args.agent == "anthropic":
         return {"model": args.model, "max_tokens": args.max_tokens, "thinking": args.thinking, "effort": args.effort}
+    if args.agent == "openai":
+        return {"model": args.model, "max_tokens": args.max_tokens, "effort": args.effort,
+                "base_url": args.base_url, "api_key_var": args.api_key_var}
     return {"mode": args.mode}
 
 
@@ -227,8 +230,10 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="generate a world, run an agent, verify, write a trajectory")
     r.add_argument("--seed", type=int, required=True)
     r.add_argument("--fault", default="env_var_typo")
-    r.add_argument("--agent", choices=["anthropic", "scripted"], default="anthropic")
-    r.add_argument("--model", default="claude-opus-5", help="Anthropic model id (agent=anthropic), e.g. claude-opus-5, claude-sonnet-5")
+    r.add_argument("--agent", choices=["anthropic", "openai", "scripted"], default="anthropic")
+    r.add_argument("--model", default="claude-opus-5", help="model id: Anthropic (agent=anthropic) or the endpoint's id (agent=openai)")
+    r.add_argument("--base-url", default=None, help="agent=openai: OpenAI-compatible endpoint (default $OPENAI_BASE_URL or api.openai.com/v1)")
+    r.add_argument("--api-key-var", default="OPENAI_API_KEY", help="agent=openai: env var holding the API key")
     r.add_argument("--max-tokens", type=int, default=16000, help="max output tokens per model turn")
     r.add_argument("--thinking", choices=["adaptive", "off"], default="adaptive", help="adaptive thinking (default) or none")
     r.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None, help="output_config.effort (default: API default)")
@@ -278,8 +283,10 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--seeds", required=True, help="e.g. 1-200 or 1-50,60,70-80")
     sw.add_argument("--out", required=True, help="sweep directory (results, per-episode trajectories, report.md)")
     sw.add_argument("--fault", default="env_var_typo")
-    sw.add_argument("--agent", choices=["anthropic", "scripted"], default="anthropic")
+    sw.add_argument("--agent", choices=["anthropic", "openai", "scripted"], default="anthropic")
     sw.add_argument("--model", default="claude-opus-5")
+    sw.add_argument("--base-url", default=None, help="agent=openai: OpenAI-compatible endpoint")
+    sw.add_argument("--api-key-var", default="OPENAI_API_KEY", help="agent=openai: env var holding the API key")
     sw.add_argument("--max-tokens", type=int, default=16000)
     sw.add_argument("--thinking", choices=["adaptive", "off"], default="adaptive")
     sw.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)

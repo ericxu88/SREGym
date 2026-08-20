@@ -211,6 +211,13 @@ def _episode_argv(cfg: SweepConfig, seed: int, ep_dir: Path) -> list[str]:
                  "--thinking", str(kw.get("thinking", "adaptive"))]
         if kw.get("effort"):
             argv += ["--effort", str(kw["effort"])]
+    elif cfg.agent == "openai":
+        argv += ["--model", str(kw.get("model", "gpt-5.2")), "--max-tokens", str(kw.get("max_tokens", 16000)),
+                 "--api-key-var", str(kw.get("api_key_var", "OPENAI_API_KEY"))]
+        if kw.get("base_url"):
+            argv += ["--base-url", str(kw["base_url"])]
+        if kw.get("effort"):
+            argv += ["--effort", str(kw["effort"])]
     else:
         argv += ["--mode", str(kw.get("mode", "solve"))]
     if not cfg.live_traffic:

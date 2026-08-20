@@ -5,7 +5,8 @@ from sregym.harness.agents.base import AgentAdapter, AgentTurn, ToolCall
 
 
 def make_agent(kind: str, **kwargs) -> AgentAdapter:
-    """Factory: ``anthropic`` (Claude via the Anthropic API), ``scripted`` (deterministic reference solver).
+    """Factory: ``anthropic`` (Claude via the Anthropic API), ``openai`` (any OpenAI-compatible
+    endpoint: OpenAI, vLLM, Ollama, OpenRouter, ...), ``scripted`` (deterministic reference solver).
 
     Adding a provider = one new module implementing AgentAdapter + an entry here.
     """
@@ -13,11 +14,15 @@ def make_agent(kind: str, **kwargs) -> AgentAdapter:
         from sregym.harness.agents.anthropic_adapter import AnthropicAdapter
 
         return AnthropicAdapter(**kwargs)
+    if kind == "openai":
+        from sregym.harness.agents.openai_adapter import OpenAIAdapter
+
+        return OpenAIAdapter(**kwargs)
     if kind == "scripted":
         from sregym.harness.agents.scripted import ScriptedAgent
 
         return ScriptedAgent(**{k: v for k, v in kwargs.items() if k in ("mode",)})
-    raise ValueError(f"unknown agent kind {kind!r} (available: anthropic, scripted)")
+    raise ValueError(f"unknown agent kind {kind!r} (available: anthropic, openai, scripted)")
 
 
 __all__ = ["AgentAdapter", "AgentTurn", "ToolCall", "make_agent"]

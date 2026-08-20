@@ -14,7 +14,7 @@ $ sregym run --seed 42 --agent anthropic --model claude-opus-5
 ```
 
 The MVP ships one fault template (`env_var_typo`: a config deploy typo'd a database
-env var), one model adapter (Anthropic Messages API, tool use) plus a deterministic
+env var), model adapters (Anthropic Messages API; any OpenAI-compatible endpoint) plus a deterministic
 reference solver, a paginated investigation toolset, a 3-part verifier, JSONL
 trajectories, and a CLI to run / verify / replay episodes.
 
@@ -33,6 +33,10 @@ sregym run --seed 42 --agent scripted
 
 # a real model: put ANTHROPIC_API_KEY=... in a git-ignored ./.env (auto-loaded), export it, or use an `ant auth login` profile
 sregym run --seed 42 --agent anthropic --model claude-opus-5 --max-steps 30
+# any OpenAI-compatible endpoint (OpenAI, vLLM, Ollama, OpenRouter, ...):
+sregym run --seed 42 --agent openai --model gpt-5.2                      # $OPENAI_API_KEY / $OPENAI_BASE_URL
+sregym run --seed 42 --agent openai --model claude-sonnet-5 \
+  --base-url https://api.anthropic.com/v1 --api-key-var ANTHROPIC_API_KEY
 
 # replay any trajectory offline
 sregym replay runs/<timestamp>-seed42-anthropic/trajectory.jsonl
@@ -628,7 +632,7 @@ eval sregym-env -n 5 -m <model> --no-push \
 ## CLI
 
 ```
-sregym run       --seed N [--difficulty baseline|standard|hard] [--fault env_var_typo] [--agent anthropic|scripted] [--model ID] [--effort ...] [--thinking adaptive|off]
+sregym run       --seed N [--difficulty baseline|standard|hard] [--fault env_var_typo] [--agent anthropic|openai|scripted] [--model ID] [--base-url URL] [--api-key-var VAR] [--effort ...] [--thinking adaptive|off]
                  [--max-steps 30] [--token-budget 400000] [--history-minutes 180] [--workdir DIR] [--keep-world]
                  [--out DIR] [--no-traffic] [--mode solve|mask|workaround|noop|sloppy] [--quiet]
 sregym verify    --world DIR [--trajectory FILE] [--start-service] [--json]
