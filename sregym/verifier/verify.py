@@ -291,6 +291,12 @@ class Verifier:
                          body: Any = None, describe: str = "") -> tuple[bool, str]:
         """N rapid sequential requests must ALL return an expected status (e.g. a user's legitimate
         retry burst must not be rate-limited)."""
+        # Start early in a limiter minute-window: a burst that straddles the boundary splits its
+        # count across two windows and can slip past a broken (too-low) limit on a slow host --
+        # a false "symptom resolved". n requests at <1s each comfortably fit in 40s.
+        sec = time.time() % 60
+        if sec > 40:
+            time.sleep(60.5 - sec)
         for i in range(1, n + 1):
             status, text = util.http_request(method, self.base_url + self.world.naming.route(path), body=body, timeout=8)
             if status not in expect_status:
