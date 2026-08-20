@@ -163,6 +163,12 @@ not 0.15 (workaround). Script-only edits still fail: the host refuses to run mod
 |---|---|---|---|---|---|---|
 | claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (~20 steps; clean diagnose → fix pin value → restart → burst-verify) | $0.18 |
 
+**`disk_full` — reference configuration: lean prompt, `max_steps=30`, `--stack auto`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 19/20 = 95% | 76–99% | 0.985 | 1 fixed_not_restarted (removed the quota on the last step) | $0.25 |
+
 The first measurement of this template returned **0/20, all "workaround"** — every episode migrated the two
 `kv()` call sites to the new API instead of rolling the pin back. That unanimity was the tell: the model was
 right and the rubric was opinionated. The verifier now accepts either coherent end state (see the template
@@ -367,6 +373,18 @@ per-user value (≥ 60 accepted — the intended 100 and the old 600 both pass) 
 limiter code is a workaround. Symptom verification is a **burst probe** (`http_burst`): 6 rapid checkouts
 by one user must all return 201.
 
+**`disk_full`** (rung 3, template #8): a capacity-guardrail deploy set `DATABASE_MAX_PAGES`
+(the app's optional `PRAGMA max_page_count` cap on the core database, documented in the repo README)
+*below the database's current size* — SQLite clamps the quota to the current size and every write that
+needs a new page fails with the genuine `sqlite3.OperationalError: database or disk is full`. The error
+actively misleads: `df` shows plenty of space, permissions are fine, reads and `/health` stay green; the
+trail is the config-only deploy. Fix: remove the quota (or raise it ≥ 10,000 pages, ~13× the db) and
+restart; patching the pragma out of `db.py` or pruning rows are workarounds (`files_unchanged` /
+`db_rows_intact` catch both). Mechanism note: literal ENOSPC cannot be simulated honestly without
+privileged mounts, and faking the error string without the underlying condition would be reward-hackable —
+the quota produces the real error from the real engine, live. `finalize()` VACUUMs the core db so packed
+pages make the very first write fail deterministically.
+
 **Fault composition** (`--fault composed` or `composed:<pair>`): two independent faults in one world — a
 deploy-borne one and an environmental one — with one page (the first alert that fired, plus the second
 stacked onto it as "ALSO TRIGGERED"). Vetted pairs: `migration+perms` (with a real causal ordering — the
@@ -560,7 +578,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning) · herrings.py
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py · composed.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py · disk_full.py · composed.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector) · cron.py (cron daemon)
