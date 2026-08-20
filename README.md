@@ -133,6 +133,24 @@ At 12 steps the budget separates by *fix difficulty* rather than pure truncation
 range 8–19). Rolling back the release restores service but is scored as a workaround — the root cause is the
 schema, and the verifier checks that the application code is unchanged.
 
+**`cron_write_lock` — reference configuration: lean prompt, `max_steps=30`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 19/20 = 95% | 76–99% | 0.958 | workaround 1 (rescheduled the job to *hourly* and edited the script — the rubric wants at most daily) | $0.33 |
+
+The heaviest template so far (~28 steps, ~3.5 min/episode — models spend calls correlating the burst timing
+before looking at cron, and verification itself takes a 65 s probe window). Calibrating it surfaced a scoring
+principle now encoded in the template: root cause is the **schedule alone** — disabling the entry while *also*
+editing the deployed script or app code scores 0.5 (collateral: right diagnosis, change-control violation),
+not 0.15 (workaround). Script-only edits still fail: the host refuses to run modified scripts.
+
+**`db_file_permissions` — reference configuration: lean prompt, `max_steps=30`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 19/20 = 95% | 76–99% | 0.95 | never_found 1 (the `data/` 0555 variant — hardest at 80%; both file variants 100%) | $0.28 |
+
 The causal-depth (deferred-restart) variant did not reduce success (89% vs 82% at 30 steps): the model reads
 `git log -p -- .env` rather than trusting `git show HEAD`. Episodes are ~2× longer than `env_var_typo` because a
 complete fix also requires the data backfill; at 22 steps the typical failure is "config fixed and restarted,
