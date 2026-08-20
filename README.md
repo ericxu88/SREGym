@@ -377,6 +377,13 @@ progress. Merge rule learned in testing: one member's "file unchanged" workaroun
 sibling's allowed-changed files — otherwise fixing fault A correctly would veto fault B's required fix.
 Reward stays all-or-nothing: both root causes coherently fixed, all probes green, no collateral.
 
+Measured (claude-sonnet-5, lean, `--difficulty standard`, seeds 1–20, seed-picked pairs):
+**6/20 = 30%** (95% CI 15–52%), all failures `never_found` at the 20-step budget — of which 8/14 had
+fully fixed exactly one of the two faults (4× cron, 4× perms) before running out, and 6/14 neither.
+Per-pair: ratelimit+perms 5/8, migration+perms 1/4, migration+cron 0/8. This is the first configuration
+where difficulty comes from **scope** (two remediations + verification in one budget) rather than pure
+time pressure on a known playbook — and where partial progress is measurable via member-prefixed checks.
+
 ### Verifier & reward
 
 Deterministic, no LLM (`sregym/verifier/verify.py`), run against the *live* world at the
