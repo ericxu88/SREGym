@@ -175,6 +175,12 @@ not 0.15 (workaround). Script-only edits still fail: the host refuses to run mod
 |---|---|---|---|---|---|---|
 | claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (settlement-lag page → 401s in logs → rotation diff → restore shared secret) | $0.25 |
 
+**`truncated_env` — reference configuration: lean prompt, `max_steps=30`, `--stack auto`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (dark app.log + `git status` → restore the committed .env → restart) | $0.20 |
+
 The first measurement of this template returned **0/20, all "workaround"** — every episode migrated the two
 `kv()` call sites to the new API instead of rolling the pin back. That unanimity was the tell: the model was
 right and the rubric was opinionated. The verifier now accepts either coherent end state (see the template
@@ -404,6 +410,18 @@ shared secret from git history and restart (the SESSION_SECRET rotation may stay
 narrowest object). Bypassing signature validation in code resolves the symptom but fails
 `app_code_unchanged`: authenticating with the counterparty again is the fix, not accepting unsigned events.
 
+**`truncated_env`** (rung 3, template #10): a legitimate config-only deploy shipped, but deploy-bot's
+write of `.env` was interrupted partway (`deploy.log`: *"WARN: destination write interrupted … wrote
+412/903 bytes; continuing"*) — the file on disk is truncated, sometimes ending mid-line; git has the
+correct file at HEAD (`git status` shows ` M .env`). Every lost key silently falls back to its dev
+default: the database URL(s) point at missing dev files (500s, `/health` 503) and — the fingerprint —
+`LOG_PATH` falls back to stderr, so **app.log goes dark at exactly the restart**, ending with the old
+process's shutdown lines. The 500s are visible only in the nginx access log and the metrics; the missing
+traceback is itself the clue. Variants: cut after the `# --- databases` header (everything 500s) or after
+the `DATABASE_URL` line (ledger only: reads fine, checkout 500s). Fix: restore `.env` to the committed
+configuration (`git checkout -- .env`) and restart. Re-adding just the database lines resolves the
+symptom but leaves logging dark and dev secrets in production — `remediation incomplete`, not a fix.
+
 **Fault composition** (`--fault composed` or `composed:<pair>`): two independent faults in one world — a
 deploy-borne one and an environmental one — with one page (the first alert that fired, plus the second
 stacked onto it as "ALSO TRIGGERED"). Vetted pairs: `migration+perms` (with a real causal ordering — the
@@ -597,7 +615,7 @@ sregym/
   generator/   world.py (layout, git history, DBs, manifest, state hash) · data.py (Faker data, DB provisioning) · herrings.py
                logs.py (historical evidence trail) · app_source.py (templates → revisions) · traffic_profile.py
                templates/checkout-service/** (the app) · templates/system/* (nginx, systemd, cron)
-  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py · disk_full.py · stale_secret.py · composed.py
+  faults/      base.py (FaultTemplate, VerificationSpec, Check, IncidentProfile, registry) · env_var_typo.py · ledger_divergence.py · unapplied_migration.py · cron_write_lock.py · db_file_permissions.py · bad_dependency_pin.py · rate_limit_misconfig.py · disk_full.py · stale_secret.py · truncated_env.py · composed.py
   tools/       base.py (Tool, registry, path sandbox) · read_logs.py · query_metrics.py · read_file.py · edit_file.py
                run_shell.py · restart_service.py · resolve_incident.py
   runtime/     services.py (process supervisor) · traffic.py · metrics.py (collector) · cron.py (cron daemon)
