@@ -157,6 +157,12 @@ not 0.15 (workaround). Script-only edits still fail: the host refuses to run mod
 |---|---|---|---|---|---|---|
 | claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (every episode chose fix-forward; ~21 steps, ~$0.15) | $0.15 |
 
+**`rate_limit_misconfig` — reference configuration: lean prompt, `max_steps=30`** (mini-calibration, 20 seeds)
+
+| model | config | success | 95% CI | mean reward | outcome taxonomy | $/episode |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | lean, 30 steps | 20/20 = 100% | 84–100% | 1.00 | — (~20 steps; clean diagnose → fix pin value → restart → burst-verify) | $0.18 |
+
 The first measurement of this template returned **0/20, all "workaround"** — every episode migrated the two
 `kv()` call sites to the new API instead of rolling the pin back. That unanimity was the tell: the model was
 right and the rubric was opinionated. The verifier now accepts either coherent end state (see the template
