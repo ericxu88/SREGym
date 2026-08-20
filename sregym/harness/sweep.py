@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -26,8 +28,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sregym import util
-from sregym.harness.agents import make_agent
-from sregym.harness.episode import EpisodeConfig, run_episode
 from sregym.harness.trajectory import read_trajectory
 
 OUTCOMES = ["success", "collateral_damage", "workaround", "fixed_not_restarted", "remediation_incomplete", "wrong_fix",
@@ -55,6 +55,7 @@ class SweepConfig:
     history_minutes: int = 180
     live_traffic: bool = True
     retries: int = 2  # per seed, for infra errors only
+    episode_timeout_s: int = 1500  # hard wall-clock deadline per episode (the watchdog kills and retries)
     rerun: bool = False  # ignore existing results
     keep_worlds: bool = False
     prompt_style: str = "full"
@@ -192,15 +193,56 @@ def _load_existing(cfg: SweepConfig) -> dict[int, dict[str, Any]]:
     return out
 
 
+def _episode_argv(cfg: SweepConfig, seed: int, ep_dir: Path) -> list[str]:
+    argv = [sys.executable, "-m", "sregym.cli", "run", "--seed", str(seed), "--fault", cfg.fault,
+            "--agent", cfg.agent, "--max-steps", str(cfg.max_steps), "--token-budget", str(cfg.token_budget),
+            "--history-minutes", str(cfg.history_minutes), "--prompt-style", cfg.prompt_style,
+            "--out", str(ep_dir), "--quiet"]
+    kw = cfg.agent_kwargs
+    if cfg.agent == "anthropic":
+        argv += ["--model", str(kw.get("model", "claude-opus-5")), "--max-tokens", str(kw.get("max_tokens", 16000)),
+                 "--thinking", str(kw.get("thinking", "adaptive"))]
+        if kw.get("effort"):
+            argv += ["--effort", str(kw["effort"])]
+    else:
+        argv += ["--mode", str(kw.get("mode", "solve"))]
+    if not cfg.live_traffic:
+        argv.append("--no-traffic")
+    if cfg.keep_worlds:
+        argv.append("--keep-world")
+    return argv
+
+
 def _run_one(cfg: SweepConfig, seed: int, attempt: int) -> dict[str, Any]:
-    agent = make_agent(cfg.agent, **cfg.agent_kwargs)
+    """Run one episode in its own process with a hard wall-clock deadline.
+
+    Process isolation is the watchdog: a hung API read or tool cannot stall the sweep -- on deadline the
+    episode gets SIGTERM (its atexit stops the world's service processes), then SIGKILL, and is recorded
+    as an infra error so the retry logic takes over."""
     ep_dir = cfg.out_dir / "episodes" / f"seed-{seed}"
     if attempt > 1:
         ep_dir = cfg.out_dir / "episodes" / f"seed-{seed}-attempt{attempt}"
-    econf = EpisodeConfig(seed=seed, fault=cfg.fault, max_steps=cfg.max_steps, token_budget=cfg.token_budget,
-                          keep_world=cfg.keep_worlds, history_minutes=cfg.history_minutes, out_dir=ep_dir,
-                          live_traffic=cfg.live_traffic, prompt_style=cfg.prompt_style)
-    res = run_episode(agent, econf).to_dict()
+    proc = subprocess.Popen(_episode_argv(cfg, seed, ep_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    timed_out = False
+    try:
+        _, stderr = proc.communicate(timeout=cfg.episode_timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.terminate()  # SIGTERM -> the episode's atexit stops its service/cron/traffic
+        try:
+            _, stderr = proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _, stderr = proc.communicate()
+    result_path = ep_dir / "result.json"
+    if not result_path.exists():
+        reason = (f"episode exceeded the {cfg.episode_timeout_s}s deadline and was killed" if timed_out
+                  else f"episode process exited {proc.returncode} without a result: {(stderr or '')[-400:]}")
+        return {"seed": seed, "fault": cfg.fault, "reward": 0.0, "success": False, "stop_reason": "infra_error",
+                "verification": {"symptom_resolved": False, "root_cause_fixed": False, "no_collateral_damage": False},
+                "steps": 0, "usage": {}, "agent": {"agent": cfg.agent, **cfg.agent_kwargs}, "outcome": "infra_error",
+                "infra_error": reason, "error": None, "attempt": attempt, "trajectory_path": None, "cost_usd": None}
+    res = util.read_json(result_path)
     _, steps, _ = read_trajectory(Path(res["trajectory_path"]))
     res["outcome"] = classify_outcome(res, steps)
     res["attempt"] = attempt

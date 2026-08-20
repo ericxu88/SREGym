@@ -169,7 +169,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         seeds=parse_seeds(args.seeds), out_dir=Path(args.out), agent=args.agent, agent_kwargs=_agent_kwargs(args),
         fault=args.fault, max_steps=args.max_steps, token_budget=args.token_budget, concurrency=args.concurrency,
         history_minutes=args.history_minutes, live_traffic=not args.no_traffic, retries=args.retries, rerun=args.rerun,
-        keep_worlds=args.keep_worlds, prompt_style=args.prompt_style,
+        keep_worlds=args.keep_worlds, prompt_style=args.prompt_style, episode_timeout_s=args.episode_timeout,
     )
     summary = run_sweep(cfg)
     if summary.get("n_model_results"):
@@ -276,6 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--token-budget", type=int, default=400_000)
     sw.add_argument("--concurrency", type=int, default=4, help="episodes in flight at once (each is its own world/port)")
     sw.add_argument("--retries", type=int, default=2, help="retries per seed for infra/API errors")
+    sw.add_argument("--episode-timeout", type=int, default=1500, help="hard wall-clock seconds per episode before the watchdog kills it")
     sw.add_argument("--history-minutes", type=int, default=180)
     sw.add_argument("--no-traffic", action="store_true")
     sw.add_argument("--rerun", action="store_true", help="ignore existing results for these seeds")

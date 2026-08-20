@@ -26,11 +26,15 @@ class AnthropicAdapter(AgentAdapter):
 
     def __init__(self, model: str = DEFAULT_MODEL, max_tokens: int = 16000, thinking: str = "adaptive",
                  effort: str | None = None, thinking_display: str = "summarized", fallbacks: bool | None = None,
-                 max_retries: int = 4, client: Any = None):
+                 max_retries: int = 4, request_timeout: float = 240.0, client: Any = None):
         import anthropic
+        import httpx
 
         self._anthropic = anthropic
-        self.client = client or anthropic.Anthropic(max_retries=max_retries)
+        # explicit, bounded timeouts: on flaky networks a dead connection can otherwise hang a read for
+        # hours (observed: SSL read blocked ~4h during a sweep). connect fast-fails; the SDK then retries.
+        self.client = client or anthropic.Anthropic(
+            max_retries=max_retries, timeout=httpx.Timeout(request_timeout, connect=10.0))
         self.model = model
         self.max_tokens = max_tokens
         self.thinking = thinking  # "adaptive" | "off"
