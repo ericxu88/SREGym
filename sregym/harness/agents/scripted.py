@@ -256,6 +256,33 @@ class ScriptedAgent(AgentAdapter):
                                   "history and restarted; kept the intentional SESSION_SECRET rotation."),
                          root_cause="gateway-shared webhook signing secret rotated unilaterally by the last config deploy")
 
+    def _script_truncated_env(self) -> Generator[ToolCall, ToolResult | None, None]:
+        base = f"http://127.0.0.1:{self.port}"
+        self.notes.append(".env differs from HEAD and app.log went dark at the restart: the shipped file looks truncated.")
+        yield self._call("read_file", path=f"{self.repo}/.env")
+        yield self._call("run_shell", command=f"git -C {self.repo} diff -- .env | head -30")
+        if self.mode == "workaround":
+            show = yield self._call("run_shell", command=f"git -C {self.repo} show HEAD:.env")
+            urls = [l for l in (show.content if show else "").splitlines() if l.startswith(("DATABASE_URL=", "LEDGER_DATABASE_URL="))]
+            self.notes.append("Re-adding just the database lines to stop the bleeding.")
+            yield self._call("edit_file", path=f"{self.repo}/.env", old_string="# --- databases\n",
+                             new_string="# --- databases\n" + "".join(u + "\n" for u in urls))
+            yield self._call("restart_service")
+            yield self._call("resolve_incident", summary="Re-added the database URLs.", root_cause="config truncated")
+            return
+        yield self._call("run_shell", command=f"git -C {self.repo} checkout -- .env")
+        if self.mode == "sloppy":
+            yield self._call("edit_file", path=f"{self.repo}/README.md", old_string=f"# {self.repo}", new_string=f"# {self.repo} (fixed)")
+        yield self._call("restart_service")
+        yield self._call("run_shell", command=f"curl -s {base}/health")
+        yield self._call("read_logs", path=f"{self.repo}/logs/app.log", tail=True, limit=5)
+        yield self._call("resolve_incident",
+                         summary=("Deploy-bot's write of .env was interrupted (deploy.log shows the WARN): the file on disk "
+                                  "was truncated, every lost key fell back to a dev default (missing dev db files -> 500s; "
+                                  "LOG_PATH empty -> app.log dark). Restored the committed .env with git checkout and "
+                                  "restarted; health is green and logging resumed."),
+                         root_cause="truncated .env from an interrupted config ship; restored the committed file")
+
     def _script_permissions(self) -> Generator[ToolCall, ToolResult | None, None]:
         base = f"http://127.0.0.1:{self.port}"
         self.notes.append("Writes fail with 'readonly database' while reads work: checking file modes and the host agent log.")
@@ -469,6 +496,10 @@ class ScriptedAgent(AgentAdapter):
         self.notes.append("500s carry 'unable to open database file'. Checking for restarts/config warnings around the onset.")
         yield self._call("read_logs", path=f"{self.repo}/logs/app.log", grep=rf"{self.pkg}\.serve|{self.pkg}\.config|Shutting down", tail=True, limit=15)
         yield self._call("read_logs", path=f"{self.repo}/logs/deploy.log", tail=True, limit=8)
+        st = yield self._call("run_shell", command=f"git -C {self.repo} status --porcelain")
+        if st and any(ln.strip().startswith("M") and ln.strip().endswith(".env") for ln in st.content.splitlines()):
+            yield from self._script_truncated_env()
+            return
         yield self._call("run_shell", command=f"curl -s {base}/health")
         self.notes.append("A config-only deploy restarted the service right when errors began. Reviewing that commit.")
         diff = yield self._call("run_shell", command=f"git -C {self.repo} show HEAD")

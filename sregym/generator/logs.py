@@ -281,6 +281,8 @@ def _gateway_webhook(sim: _Sim, ts: datetime, order_id: int, amount: int, ref: s
     if at >= sim.world.now:
         return  # would land after "now"
     inc = sim.incident
+    if inc and -4.0 < (at - inc.restart_at).total_seconds() < 1.0:
+        return  # would land in the restart's down-gap (the gateway retries later)
     key = "POST /webhooks/payments"
     rejected = bool(inc) and key in inc.failing_endpoints and at >= inc.incident_at
     latency = tp.latency_ms(rng, "/webhooks/payments")
@@ -552,9 +554,14 @@ def generate_history(world: World, incident: IncidentProfile | None, seed: int |
 
     # ------------------------------------------------------------------ write artifacts
     sim.events.sort(key=lambda e: (e.ts, e.seq))
+    events = sim.events
+    dark_since = incident.extra.get("app_log_dark_since") if incident else None
+    if dark_since:  # the restarted process lost LOG_PATH and logs to stderr: app.log just stops
+        dark_ts = util.parse_iso(dark_since)
+        events = [e for e in events if e.ts < dark_ts]
     world.log_dir.mkdir(parents=True, exist_ok=True)
     with open(world.app_log, "w") as f:
-        for ev in sim.events:
+        for ev in events:
             f.write("\n".join(ev.lines) + "\n")
     nginx_dir = world.root / "var" / "log" / "nginx"
     nginx_dir.mkdir(parents=True, exist_ok=True)
@@ -597,7 +604,7 @@ def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: rando
             restart_at = incident.restart_at if d.get("restart") == "restart" else None
             lines += _deploy_lines(world.naming.service, util.parse_iso(d["when"]), d["sha"], d["author"], d["message"], config_only=bool(d.get("config_only")),
                                    rng=rng, restart_at=restart_at, restart=d.get("restart", "restart"),
-                                   deps_line=d.get("deps_line"), crashed=bool(d.get("crashed")))
+                                   deps_line=d.get("deps_line"), crashed=bool(d.get("crashed")), ship_note=d.get("ship_note"))
     elif incident and custom is None:
         lines += _deploy_lines(world.naming.service, incident.deploy_at, incident.deploy_commit[:7], incident.deploy_author, incident.deploy_message,
                                config_only=True, rng=rng, restart_at=incident.restart_at)
@@ -606,7 +613,7 @@ def _write_deploy_log(world: World, incident: IncidentProfile | None, rng: rando
 
 def _deploy_lines(svc: str, when: datetime, sha: str, author: str, message: str, config_only: bool, rng: random.Random,
                   restart_at: datetime | None = None, restart: str = "restart", deps_line: str | None = None,
-                  crashed: bool = False) -> list[str]:
+                  crashed: bool = False, ship_note: str | None = None) -> list[str]:
     tag = f"[{svc}]"
     t = when
     out = [f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deploy {sha} requested by {author} ({message})"]
@@ -614,7 +621,7 @@ def _deploy_lines(svc: str, when: datetime, sha: str, author: str, message: str,
     out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} git fetch origin && git checkout {sha} ... ok")
     if config_only:
         t += timedelta(seconds=rng.uniform(1, 2))
-        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} shipping .env (1 file changed)")
+        out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} shipping .env (1 file changed)" + (f" ... {ship_note}" if ship_note else ""))
     else:
         t += timedelta(seconds=rng.uniform(4, 12))
         out.append(f"{t:%Y-%m-%d %H:%M:%S} deploy-bot: {tag} deps: python scripts/deploy_deps.py ... {deps_line or 'reqlog==2.1.0 installed (no change)'}")
