@@ -11,3 +11,4 @@ build/
 .env
 .env.*
 sweeps/
+environments/sregym_env/dist/
