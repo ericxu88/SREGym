@@ -1,6 +1,6 @@
 [project]
 name = "sregym-env"
-version = "0.1.1"
+version = "0.1.2"
 description = "SREGym — procedurally generated, deterministically verified on-call incident response (verifiers v1 taskset)."
 requires-python = ">=3.11,<3.14"
 # self-contained: the wheel bundles the sregym core (and its templates), so it installs
