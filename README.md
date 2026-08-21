@@ -313,8 +313,9 @@ collateral scoring is built on. Anthropic's OpenAI-compatible endpoint works for
 evals: `--client.base-url https://api.anthropic.com/v1 --client.api-key-var
 ANTHROPIC_API_KEY`.
 
-To publish a new version: bump `environments/sregym_env/pyproject.toml`, then
-`prime env push sregym-env -v PUBLIC`.
+To publish a new version: bump the version in `environments/sregym_env/pyproject.toml`,
+then run `environments/sregym_env/push.sh` (vendors the core into the package, replicates
+the Hub's install test, then pushes).
 
 ## CLI
 
