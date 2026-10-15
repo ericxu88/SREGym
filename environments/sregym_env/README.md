@@ -30,8 +30,11 @@ land in the 25 to 60% band.
 ## Usage
 
 ```bash
-validate sregym-env -n 2          # model-free wiring check
-eval sregym-env -n 10 -m <model>  # the taskset is infinite, so bound it with -n
+# verifiers >= 0.4: the default runtime is Prime's paid cloud sandboxes; add the
+# subprocess runtime flag to run locally for free.
+vf-validate sregym-env -n 2 --runtime.type subprocess
+vf-eval sregym-env -n 10 -m <model> --env.agent.runtime.type subprocess
+# the taskset is infinite, so bound runs with -n
 ```
 
 Config knobs under `--env.taskset.*`: `faults` (comma list or "all"), `difficulty`

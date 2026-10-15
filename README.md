@@ -294,8 +294,11 @@ infinite (procedural seeds; bound runs with `-n`) and published publicly as
 prime env install ericxu88/sregym-env
 # or: uv pip install sregym_env --extra-index-url https://hub.primeintellect.ai/ericxu88/simple/
 
-validate sregym-env -n 2          # model-free wiring check
-eval sregym-env -n 5 -m <model> --no-push \
+# verifiers >= 0.4 renamed the CLIs (vf-eval/vf-validate) and defaults to Prime's paid
+# cloud sandboxes; pass the subprocess runtime to run locally for free.
+vf-validate sregym-env -n 2 --runtime.type subprocess        # model-free wiring check
+vf-eval sregym-env -n 5 -m <model> --no-push \
+  --env.agent.runtime.type subprocess \
   --client.base-url <openai-compatible-url> --client.api-key-var <KEY_VAR> \
   --env.taskset.difficulty standard
 ```
